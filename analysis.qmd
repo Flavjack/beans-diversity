@@ -1,16 +1,15 @@
 ---
-title: ""
-author: ""
+title: " "
+author: " "
 format:
   html:
     toc: true
-    toc-expand: true
-    toc-depth: 4
+    toc-expand: 2
     toc-location: left
     number-sections: true
     self-contained: true
     code-fold: true
-    output-file: "ESM"
+    output-file: "ESM_1"
 editor_options: 
   chunk_output_type: console
 execute: 
@@ -24,110 +23,415 @@ execute:
 ```{r}
 #| label:  setup
 
+library(factoextra)
+library(vegan)
+library(dplyr)
+library(purrr)
+library(writexl) 
 source('https://inkaverse.com/setup.r')
 ```
 
 # Data import
 
-```{r}
-gs <- "url" %>% 
-  as_sheets_id()
+# data
+> https://docs.google.com/spreadsheets/d/1uctK0JUrazXonQsA-Drt70Vwbv6JnfiKOoGIpcJGGMI/edit?gid=644660855#gid=644660855
 
-fb <- gs %>% 
-  range_read(ss = .,sheet = "fb")
+# Import data
+
+```{r}
+url <- "https://docs.google.com/spreadsheets/d/1uctK0JUrazXonQsA-Drt70Vwbv6JnfiKOoGIpcJGGMI/edit?gid=644660855#gid=644660855"
+
+gs <- as_sheets_id(url)
+
+fb <- range_read(gs, sheet = "fb") %>% 
+  mutate(across(cce_12_1:ncol(.), ~ as.character(.))) %>% 
+  pivot_longer(!c(1:TREATMENT)) %>% 
+  separate(name, c("name", "pheno", "sample")) %>% 
+  dplyr::select(!c(pheno)) %>% 
+  pivot_wider() %>% 
+  mutate(across(c(1:sample), as.factor)) %>% 
+  as.data.frame()
+
+str(fb)
+
+quali <- fb %>% 
+  dplyr::select(c(1:sample, cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc)) %>% 
+  filter(!str_detect(CHECKS, "1"))
+
+str(quali)
+
+
+quali <- quali %>%
+  mutate(across(
+    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),  
+    ~ gsub("^\\d+\\s*", "", .)  
+  )) %>%
+  mutate(across(
+    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),  
+    ~ iconv(., from = "UTF-8", to = "ASCII//TRANSLIT")  
+  )) %>%
+  mutate(across(
+    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),
+    ~ str_replace_all(., 
+                      c("Ãº" = "ú", 
+                        "Ã³" = "ó", 
+                        "Ã" = "Á", 
+                        "A3" = "o"))
+  ))
 ```
 
-# Research Objective
 
-1. 
-1.
-
-## RO 1
-
+# Descriptors
 ```{r}
+info <- range_read(gs, sheet = "descriptor") %>%
+  rename_with(~ iconv(.x, from = "UTF-8", to = "ASCII//TRANSLIT")) %>%
+  rename_with(~ str_replace_all(.x, "^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "")) %>%
+  tidyr::fill(c(abbreviatio_sp , abbreviatio_en, descriptors), .direction = "down")
 
+info %>% str()
 ```
 
-## RO 2
+
+# Objective 1
+
+## Study of the morphological diversity of qualitative variables in quinoa accessions
+
+### Rasgos cualitativos (Na), Numero efectivo de clases(Ne), Diversidad genetica de Nei(He) y Shannon–Weaver diversity index (H′)
 
 ```{r}
 
-```
+qt <- quali %>%
+  dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
+  drop_na()
 
-# PCA
+vars <- names(qt)
 
-```{r}
-dtx <- fb
+labs <- info %>%
+  filter(abbreviatio_sp %in% vars) %>%
+  dplyr::select(abbreviatio_sp, descriptors) %>%
+  deframe()
 
-# str(dtx)
+sum_q <- function(df, v, lab) {
+  tb <- df %>%
+    filter(!is.na(.data[[v]])) %>%
+    count(.data[[v]], name = "Na") %>%
+    mutate(fi = Na / sum(Na))
   
-mv <- PCA(X = dtx, scale.unit = T, graph = F)
+  Nc <- nrow(tb)
+  p2 <- sum(tb$fi^2)
+  Ne <- 1 / p2
+  He <- 1 - p2
+  Hp <- vegan::diversity(tb$Na, index = "shannon")
+  
+  tb %>%
+    mutate(
+      `Qualitative trait` = lab,
+      Nc = Nc,
+      Ne = Ne,
+      He = He,
+      Hp = Hp
+    ) %>%
+    rename(`Phenotypic classes observed` = all_of(v)) %>%
+    dplyr::select(
+      `Qualitative trait`,
+      `Phenotypic classes observed`,
+      Na, fi, Nc, Ne, He, Hp
+    )
+}
 
-fviz_pca_var(mv, col.var = "cos2",
-             gradient.cols = c("#7570b3",  "#d95f02", "#e7298a", "#1b9e77", "#66a61e"), 
-             repel = TRUE
-             )
+qtb <- map_dfr(
+  vars,
+  ~ sum_q(qt, v = .x, lab = labs[.x])
+)
 
-var <- plot.PCA(mv, choix = c("var"), cex=0.7, )
+res <- qtb %>%
+  distinct(`Qualitative trait`, Nc, Ne, He, Hp)
 
-ind <- plot.PCA(mv, choix = c("ind")
-                , cex = 0.5
-                , label = "ind"
-                , invisible = "quali"
-                )
+avg <- res %>%
+  summarise(
+    Nc_m  = mean(Nc, na.rm = TRUE),
+    Nc_se = sd(Nc, na.rm = TRUE) / sqrt(sum(!is.na(Nc))),
+    Ne_m  = mean(Ne, na.rm = TRUE),
+    Ne_se = sd(Ne, na.rm = TRUE) / sqrt(sum(!is.na(Ne))),
+    He_m  = mean(He, na.rm = TRUE),
+    He_se = sd(He, na.rm = TRUE) / sqrt(sum(!is.na(He))),
+    Hp_m  = mean(Hp, na.rm = TRUE),
+    Hp_se = sd(Hp, na.rm = TRUE) / sqrt(sum(!is.na(Hp)))
+  )
 
-plot <- list(var, ind) %>% 
-  plot_grid(plotlist = ., ncol = 2, labels = "auto") %>% 
-  ggsave(plot = ., "manuscript/PCA.jpg", units = "cm"
-                , width = 30, height = 15)
+out <- qtb %>%
+  mutate(across(c(fi, Nc, Ne, He, Hp), ~ round(., 2))) %>%
+  rename(`H′` = Hp)
 
-plot %>% include_graphics()
+fmt <- out %>%
+  group_by(`Qualitative trait`) %>%
+  mutate(
+    Na = as.character(Na),
+    fi = sprintf("%.2f", fi),
+    Nc = if_else(row_number() == 1, sprintf("%.2f", Nc), ""),
+    Ne = if_else(row_number() == 1, sprintf("%.2f", Ne), ""),
+    He = if_else(row_number() == 1, sprintf("%.2f", He), ""),
+    `H′` = if_else(row_number() == 1, sprintf("%.2f", `H′`), ""),
+    `Qualitative trait` = if_else(row_number() == 1, `Qualitative trait`, "")
+  ) %>%
+  ungroup()
 
-pcainfo <- factoextra::get_pca(mv)
+mrow <- avg %>%
+  transmute(
+    `Qualitative trait` = "Mean ± SE",
+    `Phenotypic classes observed` = "",
+    Na = "",
+    fi = "",
+    Nc = sprintf("%.2f ± %.2f", Nc_m, Nc_se),
+    Ne = sprintf("%.2f ± %.2f", Ne_m, Ne_se),
+    He = sprintf("%.2f ± %.2f", He_m, He_se),
+    `H′` = sprintf("%.2f ± %.2f", Hp_m, Hp_se)
+  )
 
-sink("files/pca.txt")
-cat("\nPrincipal Component Analysis Results\n")
-summary(mv, nbelements = Inf, nb.dec = 2)
-cat("\nCorrelations between variables and dimensions\n")
-mv$cor
-cat("\nContributions of the variables\n")
-mv$contrib
-sink()
+Diversity <- fmt %>%
+  mutate(across(c(Nc, Ne, He, `H′`), as.character)) %>%
+  bind_rows(mrow)
 
-cls <- HCPC(mv, graph = F
-            , nb.clust = -1
-            , metric = "euclidean"
-            , method = "ward"
+Diversity %>%
+  knitr::kable(caption = "Shannon–Weaver diversity index (H′)")
+
+cor_matrix <- res %>%
+  dplyr::select(Nc, Ne, He, Hp) %>%
+  drop_na()
+
+psych::pairs.panels(
+  cor_matrix,
+  method = "spearman",
+  hist.col = "red",
+  pch = 21,
+  stars = TRUE,
+  scale = FALSE,
+  lm = TRUE
+)
+```
+
+# Objective 2
+
+## Study of the morphological diversity of quantitative variables of quinoa accessions and variables with the greatest discriminant contribution
+
+```{r}
+quanti <- fb %>% 
+  dplyr::select(c(1:sample, ap, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp)) 
+str(quanti)
+
+exp <- quanti%>%
+  mutate(geno = case_when(
+    CHECKS == 0 ~ as.character(CODIGO)
+    , CHECKS == 1 ~ "CHECKS"
+  ), .after = CHECKS) %>% 
+  mutate(across(c(1:sample), as.factor)) %>% 
+  mutate(across(c(ap, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp), as.numeric)) %>% 
+  dplyr::select(1:sample, ap, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp) 
+
+exp %>% web_table()
+```
+
+### Augmented design with entries as random effects and checks as fixed effects
+
+Model: y ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
+
+
+
+```{r}
+rslt <- 15:length(exp) %>% map(\(x) {
+  
+trait <- names(exp)[x]
+
+exp %>% 
+  drop_na(trait) %>% 
+  H2cal(trait = trait
+    , gen.name = "geno"
+    , rep.n = 2
+    , fixed.model = ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
+    , random.model = ~ 1 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + (1|geno)
+    , summary = T
+    , emmeans = F
+    , plot_diag = T
+    , outliers.rm = F
+    )
+
+})
+
+tabsmr <- 1:length(rslt) %>% map(\(x) {
+      rslt[[x]][["tabsmr"]] 
+      }) %>% 
+  bind_rows()
+
+blues <- 1:length(rslt) %>% map(\(x) {
+      rslt[[x]][["blues"]] %>% dplyr::select(!matches("smith.w"))
+      }) %>% Reduce(function(...) merge(..., all = TRUE
+                                        , by = c('geno')), .)
+
+blups <- 1:length(rslt) %>% map(\(x) {
+      rslt[[x]][["blups"]] %>% dplyr::select(!matches("smith.w"))
+      }) %>% Reduce(function(...) merge(..., all = TRUE
+                                        , by = c('geno')), .)
+
+blues %>% web_table()
+```
+
+
+# Multivariate Analysis using BLUEs
+
+```{r}
+info2 <- read_sheet(gs, sheet = "descriptor")
+
+map_nm <- setNames(info2$abbreviatio_en, info2$abbreviatio_sp)
+
+ren <- setNames(
+  names(map_nm[names(map_nm) %in% names(blues)]),
+  map_nm[names(map_nm) %in% names(blues)]
+)
+
+blues <- blues %>% rename(!!!ren)
+
+blues <- blues %>% 
+  slice(-1) %>%
+mutate(geno = str_remove(geno, "^UNTRM11"))
+
+mv <- blues%>% 
+  column_to_rownames("geno") %>% 
+  PCA(scale.unit = T, graph = F)
+
+pcavar <- mv %>% 
+  plot.PCA(choix="var"
+           , title=""
+           , autoLab = "y"
+           ,  cex = 0.8
+           , shadowtext = T)
+
+pcaind <- mv %>% 
+  plot.PCA(choix="ind"
+           , habillage =10
+           , title=""
+           , autoLab = "y"
+           , cex = 0.8
+           , shadowtext = T
+           , label = "ind"
+           )
+
+list(pcavar, pcaind) %>% 
+  plot_grid(plotlist = ., nrow = 1, labels = "AUTO"
+            , rel_heights = c(1, 1.1)
             )
 
-sink("files/hcpc.txt")
-cat("\nHierarchical Clustering on Principal Components\n")
-cls$call$t$tree
-cls$desc.ind
-cls$desc.var
-sink()
+hcpc <- HCPC(mv, graph = FALSE)
 
-map <- \() {plot(cls, choice = "map", draw.tree = FALSE)}
-cir <- fviz_dend(cls, type = "circular", cex = 0.5)
+tree <- \() {
+  plot.HCPC(hcpc,
+          choice = "map",
+          legend = list(x = "topright",
+                        cex = 0.6,
+                        inset = 0.001,
+                        box.lty = 0),
+          draw.tree = FALSE)
+  
+}
 
-plot <- list(map, cir) %>% 
-  plot_grid(plotlist = ., ncol = 2, labels = "auto") %>% 
-  ggsave(plot = ., "manuscript/HCPC.jpg", units = "cm"
-                , width = 30, height = 15)
+plot <- plot_grid(pcavar, tree,
+                  nrow = 1, labels = "auto")
+p <- plot %>%
+  ggsave2(plot = .
+          , "manuscript/Figure.jpg"
+          , units = "cm", width = 35, height = 20)
 
-plot %>% include_graphics()
+p %>% include_graphics()
+
+# Analisis de correlación 
+cuanti_matrix <- blues %>% 
+  dplyr::select(2:ncol(blues))
+
+
+grid <- \() {
+  
+  pairs.panels(cuanti_matrix,
+             method = "spearman",   
+             hist.col = "red",      
+             pch = 21,             
+             stars = T,        
+             scale = F,
+             lm = T)  
+  
+}
+
+pg <- grid %>% 
+  plot_grid()
+
+plot <- ggsave(filename = "manuscript/Figure_.jpg"
+               , width = 30
+               , height = 30
+               , units = "cm")
 ```
 
-# References
+# Objective 3
 
-Broman, K. W., & Woo, K. H. (2017). Data organization in spreadsheets. The American Statistician, 72(1), 2–10. https://doi.org/10.1080/00031305.2017.1375989
+```{r}
+library(corrplot)
 
-Zuur, A. F., Ieno, E. N., & Elphick, C. S. (2009). A protocol for data exploration to avoid common statistical problems. Methods in Ecology and Evolution, 1(1), 3–14. https://doi.org/10.1111/j.2041-210x.2009.00001.x
+var <- get_pca_var(mv)
 
-Francoishusson. (2017, July 13). PCA course using FactoMineR | R-bloggers. R-bloggers. https://www.r-bloggers.com/2017/07/pca-course-using-factominer/
+tmp <- tempfile(fileext = ".png")
+ppi <- 300
+png(tmp, width=4*ppi, height=12*ppi, res=ppi)
+corrplot(var$cor, 
+         method="number",
+         tl.col="black", 
+         tl.srt=45)
+graphics.off()
 
-Kozak, M., & Piepho, H. (2017). What’s normal anyway? Residual plots are more telling than significance tests when checking ANOVA assumptions. Journal of Agronomy and Crop Science, 204(1), 86–98. https://doi.org/10.1111/jac.12220
+pt1 <- png::readPNG(tmp) %>%
+  grid::rasterGrob(interpolate = TRUE)
 
-Tanaka, E., & Hui, F. K. C. (2019). Symbolic formulae for linear mixed models. In Communications in computer and information science (pp. 3–21). https://doi.org/10.1007/978-981-15-1960-4_1
+pt2 <- fviz_eig(mv, 
+                addlabels=TRUE,
+                hjust = 0.05,
+                barfill="white",
+                barcolor ="darkblue",
+                linecolor ="red") + 
+  ylim(0, 45) +  
+  labs(
+    title = "PCA - percentage of explained variances",
+    y = "Variance (%)") +
+  theme_minimal()
 
-Schielzeth, H., Dingemanse, N. J., Nakagawa, S., Westneat, D. F., Allegue, H., Teplitsky, C., Réale, D., Dochtermann, N. A., Garamszegi, L. Z., & Araya‐Ajoy, Y. G. (2020). Robustness of linear mixed‐effects models to violations of distributional assumptions. Methods in Ecology and Evolution, 11(9), 1141–1152. https://doi.org/10.1111/2041-210x.13434
+pt3 <- fviz_contrib(mv,
+                     choice = "var", 
+                     axes = 1, 
+                     top = 10,
+                     fill = "white",
+                     color = "darkblue",
+                     sort.val = "desc") +
+  ylim(0, 25) + 
+  labs(title = "Dim 1 - variables contribution")
+
+pt4 <- fviz_contrib(mv,
+                     choice = "var", 
+                     axes = 2, 
+                     top = 10,
+                     fill = "white",
+                     color = "darkblue",
+                     sort.val = "desc") +
+  ylim(0, 30) +  
+  labs(title = "Dim 2 - variables contribution")
+
+plot <- ggdraw(xlim = c(0.0, 1.0), ylim = c(0, 1.0)) +
+  draw_plot(pt1,  width = 0.4, height = 1.2, x = 0.6, y = -0.10) +  
+  draw_plot(pt2,  width = 0.6, height = 0.34, x = 0.03, y = 0.66) +
+  draw_plot(pt3, width = 0.6, height = 0.34, x = 0.03, y = 0.33) + 
+  draw_plot(pt4, width = 0.6, height = 0.34, x = 0.03, y = 0.0) +
+  draw_plot_label(
+    label = c("a", "b", "c", "d"),
+    x = c(0.005, 0.005, 0.005, 0.65),
+    y = c(0.999, 0.67, 0.34, 0.999))
+
+print(plot)
+
+pt <- ggsave2(plot = plot, "files/SFigure-1.jpg", height = 25, width = 35, units = "cm")
+
+pt %>% include_graphics()
+```
