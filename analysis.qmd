@@ -20,7 +20,7 @@ execute:
 
 # Project Setup
 
-```{r}
+```{r }
 #| label:  setup
 
 library(factoextra)
@@ -38,7 +38,7 @@ source('https://inkaverse.com/setup.r')
 
 # Import data
 
-```{r}
+```{r }
 url <- "https://docs.google.com/spreadsheets/d/1uctK0JUrazXonQsA-Drt70Vwbv6JnfiKOoGIpcJGGMI/edit?gid=644660855#gid=644660855"
 
 gs <- as_sheets_id(url)
@@ -52,14 +52,9 @@ fb <- range_read(gs, sheet = "fb") %>%
   mutate(across(c(1:sample), as.factor)) %>% 
   as.data.frame()
 
-str(fb)
-
 quali <- fb %>% 
   dplyr::select(c(1:sample, cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc)) %>% 
   filter(!str_detect(CHECKS, "1"))
-
-str(quali)
-
 
 quali <- quali %>%
   mutate(across(
@@ -87,18 +82,16 @@ info <- range_read(gs, sheet = "descriptor") %>%
   rename_with(~ iconv(.x, from = "UTF-8", to = "ASCII//TRANSLIT")) %>%
   rename_with(~ str_replace_all(.x, "^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "")) %>%
   tidyr::fill(c(abbreviatio_sp , abbreviatio_en, descriptors), .direction = "down")
-
-info %>% str()
 ```
 
 
 # Objective 1
 
-## Study of the morphological diversity of qualitative variables in quinoa accessions
+## Study of the morphological diversity of qualitative variables in beans accessions
 
 ### Rasgos cualitativos (Na), Numero efectivo de clases(Ne), Diversidad genetica de Nei(He) y Shannon–Weaver diversity index (H′)
 
-```{r}
+```{r }
 
 qt <- quali %>%
   dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
@@ -124,14 +117,21 @@ sum_q <- function(df, v, lab) {
   Hp <- vegan::diversity(tb$Na, index = "shannon")
   
   tb %>%
+    rename(cat_es = all_of(v)) %>%
+    left_join(
+      info %>%
+        dplyr::select(cat_es, cat_en) %>%
+        distinct(cat_es, .keep_all = TRUE),
+      by = "cat_es"
+    ) %>%
     mutate(
       `Qualitative trait` = lab,
+      `Phenotypic classes observed` = dplyr::coalesce(cat_en, as.character(cat_es)),
       Nc = Nc,
       Ne = Ne,
       He = He,
       Hp = Hp
     ) %>%
-    rename(`Phenotypic classes observed` = all_of(v)) %>%
     dplyr::select(
       `Qualitative trait`,
       `Phenotypic classes observed`,
@@ -195,6 +195,8 @@ Diversity <- fmt %>%
 Diversity %>%
   knitr::kable(caption = "Shannon–Weaver diversity index (H′)")
 
+write_xlsx(Diversity, "manuscript/Table-1.xlsx")
+
 cor_matrix <- res %>%
   dplyr::select(Nc, Ne, He, Hp) %>%
   drop_na()
@@ -214,10 +216,9 @@ psych::pairs.panels(
 
 ## Study of the morphological diversity of quantitative variables of quinoa accessions and variables with the greatest discriminant contribution
 
-```{r}
+```{r }
 quanti <- fb %>% 
-  dplyr::select(c(1:sample, ap, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp)) 
-str(quanti)
+  dplyr::select(c(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp)) 
 
 exp <- quanti%>%
   mutate(geno = case_when(
@@ -225,10 +226,9 @@ exp <- quanti%>%
     , CHECKS == 1 ~ "CHECKS"
   ), .after = CHECKS) %>% 
   mutate(across(c(1:sample), as.factor)) %>% 
-  mutate(across(c(ap, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp), as.numeric)) %>% 
-  dplyr::select(1:sample, ap, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp) 
+  mutate(across(c(ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp), as.numeric)) %>% 
+  dplyr::select(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp) 
 
-exp %>% web_table()
 ```
 
 ### Augmented design with entries as random effects and checks as fixed effects
@@ -237,26 +237,25 @@ Model: y ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
 
 
 
-```{r}
+```{r }
 rslt <- 15:length(exp) %>% map(\(x) {
   
 trait <- names(exp)[x]
 
 exp %>% 
-  drop_na(trait) %>% 
+  drop_na(trait)%>% 
   H2cal(trait = trait
     , gen.name = "geno"
     , rep.n = 2
     , fixed.model = ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
     , random.model = ~ 1 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + (1|geno)
-    , summary = T
-    , emmeans = F
+    , summary = TRUE
+    , emmeans = FALSE
     , plot_diag = T
-    , outliers.rm = F
+    , outliers.rm = FALSE
     )
 
 })
-
 tabsmr <- 1:length(rslt) %>% map(\(x) {
       rslt[[x]][["tabsmr"]] 
       }) %>% 
@@ -277,11 +276,9 @@ blues %>% web_table()
 
 
 # Multivariate Analysis using BLUEs
-
-```{r}
-info2 <- read_sheet(gs, sheet = "descriptor")
-
-map_nm <- setNames(info2$abbreviatio_en, info2$abbreviatio_sp)
+   
+```{r }
+map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
 
 ren <- setNames(
   names(map_nm[names(map_nm) %in% names(blues)]),
@@ -368,9 +365,53 @@ plot <- ggsave(filename = "manuscript/Figure_.jpg"
                , units = "cm")
 ```
 
-# Objective 3
 
-```{r}
+# Tabla 2: Presents descriptive statistics for the quantitative traits evaluated in the blues dataset. For each trait, the table reports the mean, minimum, maximum, and coefficient of variation (CV%), providing a summary of the central tendency, range, and relative variability of the measured characteristics.
+
+```{r, echo=FALSE}
+
+en <- info$abbreviatio_en
+des<- info$descriptors
+bluesmeans <-blues 
+n <- setNames(des, en)
+nb <- n[names(n) %in% colnames(bluesmeans)]
+original <- setNames(names(nb),nb)
+bluesmeans <- bluesmeans %>% rename(!!!original)
+bluesmeans
+
+rl <- bluesmeans %>%
+  dplyr::select(c(2:13)) %>%
+  mutate(across(everything(), ~ifelse(.x < 0, 0, .x))) %>%
+  summarise(across(
+    everything(),
+    list(
+      Mean = ~round(mean(.x, na.rm = TRUE), 2),
+      Min  = ~round(min(.x, na.rm = TRUE), 2),
+      Max  = ~round(max(.x, na.rm = TRUE), 2),
+      `CV(%)` = ~round(sd(.x, na.rm = TRUE) / mean(.x, na.rm = TRUE) * 100, 2)
+    )
+  )) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("Quantitative trait", "stat"),
+    names_sep = "_",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = stat,
+    values_from = value
+  ) %>%
+  mutate(across(Min:`CV(%)`, ~formatC(.x, format = "f", digits = 2))) 
+
+rl%>% web_table()
+write_xlsx(rl, "manuscript/Table-2.xlsx")
+
+```
+
+# Supplementary material
+## Figure 1: The figure shows a principal component analysis (PCA), where (a) displays the correlation between variables and components, (b) the percentage of variance explained by each dimension, and (c–d) the variables contributing most to dimensions 1 and 2, allowing identification of the most influential variables in the data structure.
+
+```{r }
 library(corrplot)
 
 var <- get_pca_var(mv)
@@ -409,6 +450,7 @@ pt3 <- fviz_contrib(mv,
   ylim(0, 25) + 
   labs(title = "Dim 1 - variables contribution")
 
+
 pt4 <- fviz_contrib(mv,
                      choice = "var", 
                      axes = 2, 
@@ -420,7 +462,7 @@ pt4 <- fviz_contrib(mv,
   labs(title = "Dim 2 - variables contribution")
 
 plot <- ggdraw(xlim = c(0.0, 1.0), ylim = c(0, 1.0)) +
-  draw_plot(pt1,  width = 0.4, height = 1.2, x = 0.6, y = -0.10) +  
+  draw_plot(pt1,  width = 0.4, height = 1.1, x = 0.6, y = -0.05) +  
   draw_plot(pt2,  width = 0.6, height = 0.34, x = 0.03, y = 0.66) +
   draw_plot(pt3, width = 0.6, height = 0.34, x = 0.03, y = 0.33) + 
   draw_plot(pt4, width = 0.6, height = 0.34, x = 0.03, y = 0.0) +
@@ -435,3 +477,126 @@ pt <- ggsave2(plot = plot, "files/SFigure-1.jpg", height = 25, width = 35, units
 
 pt %>% include_graphics()
 ```
+
+# Tabla sumplemetaria 1
+```{r }
+library(stringr)
+
+quali2 <- quali %>%
+  dplyr::select(CODIGO, cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
+  filter(if_any(-CODIGO, ~ !is.na(.))) %>%
+  mutate(CODIGO = str_sub(CODIGO, -4)) %>%
+  distinct(CODIGO, .keep_all = TRUE)
+
+map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
+
+ren <- setNames(
+  names(map_nm[names(map_nm) %in% names(quali2)]),
+  map_nm[names(map_nm) %in% names(quali2)]
+)
+
+quali2 <- quali2 %>% rename(!!!ren)
+
+blues2 <- blues %>%
+  mutate(CODIGO = str_sub(geno, -4)) %>%
+  dplyr::select(CODIGO, PHF,PHM, SD, SPAD, NFRP, DF, FD, PL, PPP, DPM, SPP, PW, SW, SL, SWD, YPP) %>%
+  distinct(CODIGO, .keep_all = TRUE) %>% 
+ mutate(across(where(is.numeric), ~ round(.x, 2)))
+
+# Table supplementary 1 -----------------------------------
+Tabla1 <- fb %>%
+  dplyr::select(CODIGO) %>%
+  mutate(CODIGO = str_sub(CODIGO, -4)) %>%
+  distinct() %>%
+  left_join(quali2, by = "CODIGO") %>%
+  left_join(blues2, by = "CODIGO") %>%
+  mutate(flag = CODIGO %in% c("CH1", "CH2")) %>%
+  arrange(flag, CODIGO) %>%
+  dplyr::select(-flag)
+
+# DATA CHEKS----------------------------------------------------
+quanti1 <- fb %>%
+  dplyr::mutate(
+    across(c(ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp),
+           ~ as.numeric(.))
+  ) %>%
+  dplyr::select(CODIGO, ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp)
+
+quanti_ch <- quanti1 %>%
+  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>%
+  dplyr::group_by(CODIGO) %>%
+  dplyr::summarise(
+    across(where(is.numeric), ~ round(mean(.x, na.rm = TRUE), 2)),
+    .groups = "drop"
+  )
+
+map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
+
+ren <- setNames(
+  names(map_nm[names(map_nm) %in% names(quanti_ch)]),
+  map_nm[names(map_nm) %in% names(quanti_ch)]
+)
+
+quanti_ch <- quanti_ch %>% dplyr::rename(!!!ren)
+
+
+fb_ch <- fb %>%
+  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>%
+  dplyr::select(CODIGO, cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
+  dplyr::mutate(n_no_na = rowSums(!is.na(across(-CODIGO)))) %>%
+  dplyr::group_by(CODIGO) %>%
+  dplyr::slice_max(order_by = n_no_na, n = 1, with_ties = FALSE) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(-n_no_na) %>%
+  mutate(across(
+    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),  
+    ~ gsub("^\\d+\\s*", "", .)  
+  )) %>%
+  mutate(across(
+    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),  
+    ~ iconv(., from = "UTF-8", to = "ASCII//TRANSLIT")  
+  )) %>%
+  mutate(across(
+    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),
+    ~ str_replace_all(., 
+                      c("Ãº" = "ú", 
+                        "Ã³" = "ó", 
+                        "Ã" = "Á", 
+                        "A3" = "o"))
+  ))
+
+map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
+
+ren <- setNames(
+  names(map_nm[names(map_nm) %in% names(fb_ch)]),
+  map_nm[names(map_nm) %in% names(fb_ch)]
+)
+
+fb_ch <- fb_ch %>% dplyr::rename(!!!ren)
+#----------------------------------------------------------
+
+quanti_ch2 <- quanti_ch %>%
+  mutate(CODIGO = as.character(CODIGO))
+
+Tabla1 <- Tabla1 %>%
+  mutate(CODIGO = as.character(CODIGO))%>%
+  rows_update(quanti_ch2, by = "CODIGO") %>%
+  mutate(CODIGO = as.character(CODIGO)) %>%
+  rows_update(
+    fb_ch %>% mutate(CODIGO = as.character(CODIGO)),
+    by = "CODIGO"
+  ) %>%
+  mutate(CODIGO = paste0("UNTRM-335-", CODIGO))
+
+Tabla1_mod <- Tabla1 %>%
+  mutate(across(
+    where(is.character) & !all_of("CODIGO"),
+    ~ ifelse(.x %in% info$cat_es,
+             info$cat_en[match(.x, info$cat_es)],
+             .x)
+  ))
+write_xlsx(Tabla1_mod, "files/Tabla 1.xlsx")
+
+Tabla1_mod%>% web_table()
+```
+
