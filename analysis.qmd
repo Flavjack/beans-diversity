@@ -93,6 +93,16 @@ info <- range_read(gs, sheet = "descriptor") %>%
 
 ```{r }
 
+info_diccionario <- info %>%
+  dplyr::select(cat_es, cat_en) %>%
+  drop_na(cat_es, cat_en) %>%
+  separate_rows(cat_es, cat_en, sep = ";") %>%
+  mutate(
+    cat_es = str_trim(cat_es),
+    cat_en = str_trim(cat_en)
+  ) %>%
+  distinct(cat_es, .keep_all = TRUE)
+
 qt <- quali %>%
   dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
   drop_na()
@@ -117,13 +127,9 @@ sum_q <- function(df, v, lab) {
   Hp <- vegan::diversity(tb$Na, index = "shannon")
   
   tb %>%
+    mutate(across(all_of(v), ~ str_trim(as.character(.)))) %>%
     rename(cat_es = all_of(v)) %>%
-    left_join(
-      info %>%
-        dplyr::select(cat_es, cat_en) %>%
-        distinct(cat_es, .keep_all = TRUE),
-      by = "cat_es"
-    ) %>%
+    left_join(info_diccionario, by = "cat_es") %>%
     mutate(
       `Qualitative trait` = lab,
       `Phenotypic classes observed` = dplyr::coalesce(cat_en, as.character(cat_es)),
@@ -197,8 +203,10 @@ Diversity %>%
 
 write_xlsx(Diversity, "manuscript/Table-1.xlsx")
 
-cor_matrix <- res %>%
-  dplyr::select(Nc, Ne, He, Hp) %>%
+Diversity %>% web_table(scrolly = "400px")
+
+cor_matrix <- Diversity %>%
+  dplyr::select(Na,fi,Nc, Ne, He, `H′`) %>%
   drop_na()
 
 psych::pairs.panels(
@@ -218,7 +226,9 @@ psych::pairs.panels(
 
 ```{r }
 quanti <- fb %>% 
-  dplyr::select(c(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp)) 
+  dplyr::select(c(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp)) %>% 
+   mutate(across( hc, as.numeric)) %>% 
+  mutate(hc=hc*100)
 
 exp <- quanti%>%
   mutate(geno = case_when(
@@ -226,8 +236,8 @@ exp <- quanti%>%
     , CHECKS == 1 ~ "CHECKS"
   ), .after = CHECKS) %>% 
   mutate(across(c(1:sample), as.factor)) %>% 
-  mutate(across(c(ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp), as.numeric)) %>% 
-  dplyr::select(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp) 
+  mutate(across(c(ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp), as.numeric)) %>% 
+  dplyr::select(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp) 
 
 ```
 
@@ -271,7 +281,7 @@ blups <- 1:length(rslt) %>% map(\(x) {
       }) %>% Reduce(function(...) merge(..., all = TRUE
                                         , by = c('geno')), .)
 
-blues %>% web_table()
+
 ```
 
 
@@ -287,9 +297,12 @@ ren <- setNames(
 
 blues <- blues %>% rename(!!!ren)
 
+# write_xlsx(blues, "files/blues.xlsx")
 blues <- blues %>% 
   slice(-1) %>%
 mutate(geno = str_remove(geno, "^UNTRM11"))
+
+blues %>% web_table(scrolly = "400px")
 
 mv <- blues%>% 
   column_to_rownames("geno") %>% 
@@ -479,124 +492,76 @@ pt %>% include_graphics()
 ```
 
 # Tabla sumplemetaria 1
-```{r }
-library(stringr)
+```{r}
 
-quali2 <- quali %>%
-  dplyr::select(CODIGO, cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
-  filter(if_any(-CODIGO, ~ !is.na(.))) %>%
-  mutate(CODIGO = str_sub(CODIGO, -4)) %>%
-  distinct(CODIGO, .keep_all = TRUE)
+# Table blues 
+dic <- setNames(info_diccionario$cat_en, info_diccionario$cat_es)
+
+Tabla <- quali %>%
+  mutate(across(-CODIGO, ~ dplyr::recode(.x, !!!dic)))
+
+STable1 <- dplyr::left_join(
+  blues,
+  Tabla,
+  by = c("geno" = "CODIGO")
+) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 2)))
+
+write_xlsx(STable1 , "files/STable1 .xlsx")
+
+ # Tabla CH1 and CH2
+## Cuali
+CH <- fb %>% 
+  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>% 
+  dplyr::distinct(CODIGO, .keep_all = TRUE) %>% 
+  dplyr::select(c(1:sample, cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc))
 
 map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
 
 ren <- setNames(
-  names(map_nm[names(map_nm) %in% names(quali2)]),
-  map_nm[names(map_nm) %in% names(quali2)]
+  names(map_nm[names(map_nm) %in% names(CH)]),
+  map_nm[names(map_nm) %in% names(CH)]
 )
 
-quali2 <- quali2 %>% rename(!!!ren)
+CH <- CH %>% rename(!!!ren) 
 
-blues2 <- blues %>%
-  mutate(CODIGO = str_sub(geno, -4)) %>%
-  dplyr::select(CODIGO, PHF,PHM, SD, SPAD, NFRP, DF, FD, PL, PPP, DPM, SPP, PW, SW, SL, SWD, YPP) %>%
-  distinct(CODIGO, .keep_all = TRUE) %>% 
- mutate(across(where(is.numeric), ~ round(.x, 2)))
+CH <- CH %>% 
+  dplyr::select(c(12:LSCC)) %>% 
+ dplyr::select(-sample)
 
-# Table supplementary 1 -----------------------------------
-Tabla1 <- fb %>%
-  dplyr::select(CODIGO) %>%
-  mutate(CODIGO = str_sub(CODIGO, -4)) %>%
-  distinct() %>%
-  left_join(quali2, by = "CODIGO") %>%
-  left_join(blues2, by = "CODIGO") %>%
-  mutate(flag = CODIGO %in% c("CH1", "CH2")) %>%
-  arrange(flag, CODIGO) %>%
-  dplyr::select(-flag)
 
-# DATA CHEKS----------------------------------------------------
-quanti1 <- fb %>%
-  dplyr::mutate(
-    across(c(ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp),
-           ~ as.numeric(.))
-  ) %>%
-  dplyr::select(CODIGO, ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp)
+## Cuanti
 
-quanti_ch <- quanti1 %>%
-  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>%
-  dplyr::group_by(CODIGO) %>%
-  dplyr::summarise(
-    across(where(is.numeric), ~ round(mean(.x, na.rm = TRUE), 2)),
+CH1 <- fb %>% 
+  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>% 
+  dplyr::select(c(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp)) %>% 
+   mutate(across(c(ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp), as.numeric)) %>% 
+  mutate(hc=hc*100)
+
+
+CH1_mean <- CH1 %>%
+  group_by(TREATMENT) %>%
+  summarise(
+    across(
+      where(is.numeric),
+      ~ mean(.x, na.rm = TRUE)
+    ),
     .groups = "drop"
   )
 
-map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
-
 ren <- setNames(
-  names(map_nm[names(map_nm) %in% names(quanti_ch)]),
-  map_nm[names(map_nm) %in% names(quanti_ch)]
+  names(map_nm[names(map_nm) %in% names(CH1_mean )]),
+  map_nm[names(map_nm) %in% names(CH1_mean )]
 )
 
-quanti_ch <- quanti_ch %>% dplyr::rename(!!!ren)
+CH1 <- CH1_mean  %>% rename(!!!ren) 
 
 
-fb_ch <- fb %>%
-  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>%
-  dplyr::select(CODIGO, cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
-  dplyr::mutate(n_no_na = rowSums(!is.na(across(-CODIGO)))) %>%
-  dplyr::group_by(CODIGO) %>%
-  dplyr::slice_max(order_by = n_no_na, n = 1, with_ties = FALSE) %>%
-  dplyr::ungroup() %>%
-  dplyr::select(-n_no_na) %>%
-  mutate(across(
-    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),  
-    ~ gsub("^\\d+\\s*", "", .)  
-  )) %>%
-  mutate(across(
-    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),  
-    ~ iconv(., from = "UTF-8", to = "ASCII//TRANSLIT")  
-  )) %>%
-  mutate(across(
-    c( cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc),
-    ~ str_replace_all(., 
-                      c("Ãº" = "ú", 
-                        "Ã³" = "ó", 
-                        "Ã" = "Á", 
-                        "A3" = "o"))
-  ))
+STable2 <- dplyr::left_join(CH1, CH, by = "TREATMENT")
 
-map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
+write_xlsx(STable2 , "files/STable2 .xlsx")
 
-ren <- setNames(
-  names(map_nm[names(map_nm) %in% names(fb_ch)]),
-  map_nm[names(map_nm) %in% names(fb_ch)]
-)
 
-fb_ch <- fb_ch %>% dplyr::rename(!!!ren)
-#----------------------------------------------------------
-
-quanti_ch2 <- quanti_ch %>%
-  mutate(CODIGO = as.character(CODIGO))
-
-Tabla1 <- Tabla1 %>%
-  mutate(CODIGO = as.character(CODIGO))%>%
-  rows_update(quanti_ch2, by = "CODIGO") %>%
-  mutate(CODIGO = as.character(CODIGO)) %>%
-  rows_update(
-    fb_ch %>% mutate(CODIGO = as.character(CODIGO)),
-    by = "CODIGO"
-  ) %>%
-  mutate(CODIGO = paste0("UNTRM-335-", CODIGO))
-
-Tabla1_mod <- Tabla1 %>%
-  mutate(across(
-    where(is.character) & !all_of("CODIGO"),
-    ~ ifelse(.x %in% info$cat_es,
-             info$cat_en[match(.x, info$cat_es)],
-             .x)
-  ))
-write_xlsx(Tabla1_mod, "files/Tabla 1.xlsx")
-
-Tabla1_mod%>% web_table()
 ```
 
+# End
