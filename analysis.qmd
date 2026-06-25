@@ -44,6 +44,7 @@ url <- "https://docs.google.com/spreadsheets/d/1uctK0JUrazXonQsA-Drt70Vwbv6JnfiK
 gs <- as_sheets_id(url)
 
 fb <- range_read(gs, sheet = "fb") %>% 
+  dplyr::select(-geno) %>% 
   mutate(across(cce_12_1:ncol(.), ~ as.character(.))) %>% 
   pivot_longer(!c(1:TREATMENT)) %>% 
   separate(name, c("name", "pheno", "sample")) %>% 
@@ -54,7 +55,8 @@ fb <- range_read(gs, sheet = "fb") %>%
 
 quali <- fb %>% 
   dplyr::select(c(1:sample, cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc)) %>% 
-  filter(!str_detect(CHECKS, "1"))
+  filter(!str_detect(CODIGO, "CH")) %>% 
+  drop_na(cce)
 
 quali <- quali %>%
   mutate(across(
@@ -104,8 +106,7 @@ info_diccionario <- info %>%
   distinct(cat_es, .keep_all = TRUE)
 
 qt <- quali %>%
-  dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
-  drop_na()
+  dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) 
 
 vars <- names(qt)
 
@@ -230,14 +231,20 @@ quanti <- fb %>%
    mutate(across( hc, as.numeric)) %>% 
   mutate(hc=hc*100)
 
-exp <- quanti%>%
+rb <- quanti%>%
   mutate(geno = case_when(
     CHECKS == 0 ~ as.character(CODIGO)
     , CHECKS == 1 ~ "CHECKS"
   ), .after = CHECKS) %>% 
-  mutate(across(c(1:sample), as.factor)) %>% 
-  mutate(across(c(ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp), as.numeric)) %>% 
-  dplyr::select(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp) 
+  mutate(across(c(1:sample), as.factor)) 
+
+
+exp <- rb %>% 
+  mutate(across(c(ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp,
+                  dhm, spv, av, ps, ls, as, rp, hc),
+                ~ parse_number(as.character(.)))) %>% 
+  dplyr::select(1:sample, ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp,
+         dhm, spv, av, ps, ls, as, rp, hc)
 
 ```
 
@@ -299,14 +306,19 @@ blues <- blues %>% rename(!!!ren)
 
 # write_xlsx(blues, "files/blues.xlsx")
 blues <- blues %>% 
-  slice(-1) %>%
-mutate(geno = str_remove(geno, "^UNTRM11"))
+  slice(-79)
 
 blues %>% web_table(scrolly = "400px")
 
 mv <- blues%>% 
   column_to_rownames("geno") %>% 
   PCA(scale.unit = T, graph = F)
+
+pcainfo <- factoextra::get_pca(mv); pcainfo
+
+pcainfo$cor %>% kable(caption = "Variable correlations")
+pcainfo$contrib %>% kable(caption = "Variable Contribution")
+pcainfo$cos2 %>% kable(caption = "Variable Cos2")
 
 pcavar <- mv %>% 
   plot.PCA(choix="var"
@@ -343,14 +355,29 @@ tree <- \() {
   
 }
 
+library(writexl)
+
+hc <- hcpc$call$t$tree
+
+k <- length(unique(hcpc$data.clust$clust))
+clus <- cutree(hc, k)
+
+clus_df <- data.frame(
+  Accesion = names(clus),
+  Cluster = clus
+)
+
+write_xlsx(clus_df, "files/STable-1.xlsx")
+
 plot <- plot_grid(pcavar, tree,
                   nrow = 1, labels = "auto")
 p <- plot %>%
   ggsave2(plot = .
-          , "manuscript/Figure.jpg"
+          , "manuscript/Figure_4.jpg"
           , units = "cm", width = 35, height = 20)
 
 p %>% include_graphics()
+
 
 # Analisis de correlación 
 cuanti_matrix <- blues %>% 
@@ -372,7 +399,7 @@ grid <- \() {
 pg <- grid %>% 
   plot_grid()
 
-plot <- ggsave(filename = "manuscript/Figure_.jpg"
+plot <- ggsave(filename = "manuscript/Figure_3.jpg"
                , width = 30
                , height = 30
                , units = "cm")
@@ -491,6 +518,7 @@ pt <- ggsave2(plot = plot, "files/SFigure-1.jpg", height = 25, width = 35, units
 pt %>% include_graphics()
 ```
 
+
 # Tabla sumplemetaria 1
 ```{r}
 
@@ -498,7 +526,17 @@ pt %>% include_graphics()
 dic <- setNames(info_diccionario$cat_en, info_diccionario$cat_es)
 
 Tabla <- quali %>%
+  dplyr::select(-PLOT, -(NUM:sample)) %>% 
   mutate(across(-CODIGO, ~ dplyr::recode(.x, !!!dic)))
+
+map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
+
+ren <- setNames(
+  names(map_nm[names(map_nm) %in% names(Tabla)]),
+  map_nm[names(map_nm) %in% names(Tabla)]
+)
+
+Tabla <- Tabla %>% rename(!!!ren)
 
 STable1 <- dplyr::left_join(
   blues,
@@ -507,7 +545,7 @@ STable1 <- dplyr::left_join(
 ) %>%
   mutate(across(where(is.numeric), ~ round(.x, 2)))
 
-write_xlsx(STable1 , "files/STable1 .xlsx")
+write_xlsx(STable1 , "files/STable-2 .xlsx")
 
  # Tabla CH1 and CH2
 ## Cuali
@@ -559,9 +597,48 @@ CH1 <- CH1_mean  %>% rename(!!!ren)
 
 STable2 <- dplyr::left_join(CH1, CH, by = "TREATMENT")
 
-write_xlsx(STable2 , "files/STable2 .xlsx")
+write_xlsx(STable2 , "files/STable-3 .xlsx")
 
 
 ```
+
+# objetivo 2
+
+
+```{r}
+
+datos <- STable1 %>%
+  dplyr::select(geno, GH, DF, DPM, PPP, YPP, SW, HI, PHPM, SD)
+
+rownames(datos) <- datos$geno
+datos$geno <- NULL
+datos$GH <- as.factor(datos$GH)
+
+mfa <- MFA(
+  datos,
+  group = c(1, 2, 6),
+  type = c("n", "s", "s"),
+  name.group = c("Morphology","Phenology","Yield"),
+  graph = FALSE
+)
+ 
+par(mfrow = c(1, 2))
+var <- plot(mfa, choix = "var", cex = 0.8)
+ind <- plot(mfa, choix = "ind"
+            , cex = 0.8
+            , habillage = 1)
+
+
+plot1 <- plot_grid(var, ind,
+                  nrow = 1, labels = "auto")
+p1 <- plot1 %>%
+  ggsave2(plot = .
+          , "manuscript/Figure_5.jpg"
+          , units = "cm", width = 40, height = 15)
+
+p1 %>% include_graphics()
+
+```
+
 
 # End
