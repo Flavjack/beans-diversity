@@ -24,10 +24,12 @@ execute:
 #| label:  setup
 
 library(factoextra)
+library(FactoMineR)
 library(vegan)
 library(dplyr)
 library(purrr)
 library(writexl) 
+library(inti)
 source('https://inkaverse.com/setup.r')
 ```
 
@@ -106,7 +108,9 @@ info_diccionario <- info %>%
   distinct(cat_es, .keep_all = TRUE)
 
 qt <- quali %>%
-  dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) 
+  dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc)
+
+str(qt)
 
 vars <- names(qt)
 
@@ -223,11 +227,11 @@ psych::pairs.panels(
 
 # Objective 2
 
-## Study of the morphological diversity of quantitative variables of quinoa accessions and variables with the greatest discriminant contribution
+## Study of the morphological diversity of quantitative variables of beans accessions and variables with the greatest discriminant contribution
 
 ```{r }
 quanti <- fb %>% 
-  dplyr::select(c(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp)) %>% 
+  dplyr::select(c(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc)) %>% 
    mutate(across( hc, as.numeric)) %>% 
   mutate(hc=hc*100)
 
@@ -253,23 +257,23 @@ exp <- rb %>%
 Model: y ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
 
 
-
 ```{r }
+
 rslt <- 15:length(exp) %>% map(\(x) {
   
 trait <- names(exp)[x]
 
 exp %>% 
-  drop_na(trait)%>% 
+   tidyr::drop_na(all_of(trait))%>% 
   H2cal(trait = trait
     , gen.name = "geno"
     , rep.n = 2
     , fixed.model = ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
     , random.model = ~ 1 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + (1|geno)
     , summary = TRUE
-    , emmeans = FALSE
-    , plot_diag = T
-    , outliers.rm = FALSE
+    , emmeans = FALSE 
+    , plot_diag = TRUE
+    , outliers.rm = FALSE  
     )
 
 })
@@ -310,6 +314,8 @@ blues <- blues %>%
 
 blues %>% web_table(scrolly = "400px")
 
+str(blues)
+
 mv <- blues%>% 
   column_to_rownames("geno") %>% 
   PCA(scale.unit = T, graph = F)
@@ -342,7 +348,21 @@ list(pcavar, pcaind) %>%
             , rel_heights = c(1, 1.1)
             )
 
-hcpc <- HCPC(mv, graph = FALSE)
+
+# Determinacion de grupos 
+
+datos.pca <- mv$ind$coord
+
+fviz_nbclust(datos.pca, hcut, method = "wss")
+
+fviz_nbclust(datos.pca, hcut, method = "silhouette")
+
+fviz_nbclust(datos.pca, hcut, method = "gap_stat")
+
+
+# Cluster 
+
+hcpc <- HCPC(mv,nb.clust = 2, graph = FALSE)
 
 tree <- \() {
   plot.HCPC(hcpc,
@@ -355,7 +375,6 @@ tree <- \() {
   
 }
 
-library(writexl)
 
 hc <- hcpc$call$t$tree
 
@@ -367,6 +386,7 @@ clus_df <- data.frame(
   Cluster = clus
 )
 
+library(writexl)
 write_xlsx(clus_df, "files/STable-1.xlsx")
 
 plot <- plot_grid(pcavar, tree,
@@ -379,9 +399,50 @@ p <- plot %>%
 p %>% include_graphics()
 
 
-# Analisis de correlación 
+```
+
+```{r}
+# Análisis de correlación
+
 cuanti_matrix <- blues %>% 
   dplyr::select(2:ncol(blues))
+
+vars <- names(cuanti_matrix)
+
+cor_df <- combn(vars, 2, simplify = FALSE) %>%
+  purrr::map_dfr(\(x) {
+    
+    test <- cor.test(
+      cuanti_matrix[[x[1]]],
+      cuanti_matrix[[x[2]]],
+      method = "spearman",
+      exact = FALSE
+    )
+    
+    tibble(
+      Trait1 = x[1],
+      Trait2 = x[2],
+      rho = unname(test$estimate),
+      p = test$p.value
+    )
+  }) %>%
+  mutate(
+    q = p.adjust(p, method = "BH")
+  )
+
+cor_df %>%
+  arrange(q)
+
+cor_df %>%
+  summarise(
+    total = n(),
+    sig_p = sum(p < 0.05),
+    sig_q = sum(q < 0.05)
+  )
+
+cor_df %>%
+  filter(p < 0.05, q >= 0.05) %>%
+  arrange(q)
 
 
 grid <- \() {
@@ -399,11 +460,12 @@ grid <- \() {
 pg <- grid %>% 
   plot_grid()
 
-plot <- ggsave(filename = "manuscript/Figure_3.jpg"
+plot <- ggsave(filename = "manuscript/Figure-5.jpg"
                , width = 30
                , height = 30
                , units = "cm")
 ```
+
 
 
 # Tabla 2: Presents descriptive statistics for the quantitative traits evaluated in the blues dataset. For each trait, the table reports the mean, minimum, maximum, and coefficient of variation (CV%), providing a summary of the central tendency, range, and relative variability of the measured characteristics.
@@ -608,7 +670,8 @@ write_xlsx(STable2 , "files/STable-3 .xlsx")
 ```{r}
 
 datos <- STable1 %>%
-  dplyr::select(geno, GH, DF, DPM, PPP, YPP, SW, HI, PHPM, SD)
+  dplyr::select(geno, GH, DF, DPM, PPP, YPP, SW, HI, PHPM, SD) |> 
+  filter(geno != "CHECKS")
 
 rownames(datos) <- datos$geno
 datos$geno <- NULL
