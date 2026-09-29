@@ -1,6 +1,6 @@
 ---
-title: " "
-author: " "
+title: "Agromorphological diversity and promising accessions of common bean (Phaseolus vulgaris) in the northeastern Peruvian Andes"
+author: "Huanambal-Gálvez et al. 2026 "
 format:
   html:
     toc: true
@@ -29,8 +29,17 @@ library(vegan)
 library(dplyr)
 library(purrr)
 library(writexl) 
+library(cluster)
+library(pvclust)
+library(lme4)
+library(psych)
+library(plotly)
+library(corrplot)
+library(htmlwidgets)
 library(inti)
 source('https://inkaverse.com/setup.r')
+
+set.seed(123)   
 ```
 
 # Data import
@@ -46,9 +55,8 @@ url <- "https://docs.google.com/spreadsheets/d/1uctK0JUrazXonQsA-Drt70Vwbv6JnfiK
 gs <- as_sheets_id(url)
 
 fb <- range_read(gs, sheet = "fb") %>% 
-  dplyr::select(-geno) %>% 
   mutate(across(cce_12_1:ncol(.), ~ as.character(.))) %>% 
-  pivot_longer(!c(1:TREATMENT)) %>% 
+  pivot_longer(!c(1:design)) %>% 
   separate(name, c("name", "pheno", "sample")) %>% 
   dplyr::select(!c(pheno)) %>% 
   pivot_wider() %>% 
@@ -57,7 +65,7 @@ fb <- range_read(gs, sheet = "fb") %>%
 
 quali <- fb %>% 
   dplyr::select(c(1:sample, cce,tcvmfp, pv, cva,cv,cvmf, ph, cvs, fs,cda, Cpe, pcs, csco,cscc)) %>% 
-  filter(!str_detect(CODIGO, "CH")) %>% 
+  filter(!str_detect(type, "check")) %>% 
   drop_na(cce)
 
 quali <- quali %>%
@@ -77,8 +85,22 @@ quali <- quali %>%
                         "Ã" = "Á", 
                         "A3" = "o"))
   ))
-```
 
+resultado <- quali |>
+  dplyr::select(
+    cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs,
+    fs, cda, Cpe, pcs, csco, cscc
+  ) |>
+  tidyr::pivot_longer(
+    cols = dplyr::everything(),
+    names_to = "variable",
+    values_to = "categoria"
+  ) |>
+  dplyr::count(variable, categoria, name = "Na")
+
+
+print(resultado, n = Inf)
+```
 
 # Descriptors
 ```{r}
@@ -86,8 +108,33 @@ info <- range_read(gs, sheet = "descriptor") %>%
   rename_with(~ iconv(.x, from = "UTF-8", to = "ASCII//TRANSLIT")) %>%
   rename_with(~ str_replace_all(.x, "^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "")) %>%
   tidyr::fill(c(abbreviatio_sp , abbreviatio_en, descriptors), .direction = "down")
-```
 
+# 1. Category Dictionary
+
+info_diccionario <- info %>% dplyr::select(cat_es, cat_en) %>%
+  tidyr::drop_na(cat_es, cat_en) %>% 
+  tidyr::separate_rows(cat_es, cat_en, sep = ";") %>% 
+  dplyr::mutate(cat_es = stringr::str_trim(cat_es),
+    cat_en = stringr::str_trim(cat_en)
+  ) %>%
+  dplyr::distinct(cat_es, .keep_all = TRUE)
+info_diccionario <- info_diccionario %>%
+  dplyr::mutate( cat_en = dplyr::case_when(
+      cat_es == "Cafe" ~ "Brown",
+      cat_es == "Marron" ~ "Dark brown",
+      TRUE ~ cat_en
+    )
+  )
+
+info <- info %>% dplyr::mutate(
+    descriptors = dplyr::case_when(
+      abbreviatio_sp == "csco" ~ "Lighter seed coat color",
+      abbreviatio_sp == "cscc" ~ "Darker seed coat color",
+      TRUE ~ descriptors
+    )
+  )
+
+```
 
 # Objective 1
 
@@ -97,47 +144,62 @@ info <- range_read(gs, sheet = "descriptor") %>%
 
 ```{r }
 
-info_diccionario <- info %>%
-  dplyr::select(cat_es, cat_en) %>%
-  drop_na(cat_es, cat_en) %>%
-  separate_rows(cat_es, cat_en, sep = ";") %>%
-  mutate(
-    cat_es = str_trim(cat_es),
-    cat_en = str_trim(cat_en)
-  ) %>%
-  distinct(cat_es, .keep_all = TRUE)
+# 2. Qualitative variables
 
-qt <- quali %>%
-  dplyr::select(cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc)
-
-str(qt)
-
-vars <- names(qt)
+qt <- quali %>% dplyr::select(
+    cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs,
+    fs, cda, Cpe, pcs, csco, cscc
+  )
+vars_q <- names(qt)
 
 labs <- info %>%
-  filter(abbreviatio_sp %in% vars) %>%
+  dplyr::filter(abbreviatio_sp %in% vars_q) %>%
   dplyr::select(abbreviatio_sp, descriptors) %>%
-  deframe()
+  tibble::deframe()
+
+
+# 3. Frequency of each category
+resul <- qt |>
+  tidyr::pivot_longer(
+    cols = dplyr::everything(),
+    names_to = "variable",
+    values_to = "categoria"
+  ) |>
+  dplyr::filter(!is.na(categoria)) |>
+  dplyr::count(variable, categoria, name = "Na")
+
+print(resul, n = Inf)
 
 sum_q <- function(df, v, lab) {
+  
   tb <- df %>%
-    filter(!is.na(.data[[v]])) %>%
-    count(.data[[v]], name = "Na") %>%
-    mutate(fi = Na / sum(Na))
+    dplyr::filter(!is.na(.data[[v]])) %>%
+    dplyr::count(.data[[v]], name = "Na") %>%
+    dplyr::mutate(
+      fi = Na / sum(Na),
+      cat_es = stringr::str_trim(as.character(.data[[v]]))
+    ) %>%
+    dplyr::left_join(
+      info_diccionario,
+      by = "cat_es"
+    )
   
   Nc <- nrow(tb)
+  
   p2 <- sum(tb$fi^2)
+  
   Ne <- 1 / p2
+  
   He <- 1 - p2
-  Hp <- vegan::diversity(tb$Na, index = "shannon")
+  
+# Índice de Shannon–Weaver  (+ 0 evita imprimir "-0.00" cuando H' = 0)
+  Hp <- -sum(tb$fi * log(tb$fi)) + 0
   
   tb %>%
-    mutate(across(all_of(v), ~ str_trim(as.character(.)))) %>%
-    rename(cat_es = all_of(v)) %>%
-    left_join(info_diccionario, by = "cat_es") %>%
-    mutate(
+    dplyr::mutate(
       `Qualitative trait` = lab,
-      `Phenotypic classes observed` = dplyr::coalesce(cat_en, as.character(cat_es)),
+      `Phenotypic classes observed` =
+        dplyr::coalesce(cat_en, cat_es),
       Nc = Nc,
       Ne = Ne,
       He = He,
@@ -146,49 +208,119 @@ sum_q <- function(df, v, lab) {
     dplyr::select(
       `Qualitative trait`,
       `Phenotypic classes observed`,
-      Na, fi, Nc, Ne, He, Hp
+      Na,
+      fi,
+      Nc,
+      Ne,
+      He,
+      Hp
     )
 }
 
-qtb <- map_dfr(
-  vars,
-  ~ sum_q(qt, v = .x, lab = labs[.x])
+
+# 6. Calculate diversity for the 14 characters
+
+qtb <- purrr::map_dfr(
+  vars_q,
+  ~ sum_q(
+    qt,
+    v = .x,
+    lab = labs[.x]
+  )
 )
 
-res <- qtb %>%
-  distinct(`Qualitative trait`, Nc, Ne, He, Hp)
 
-avg <- res %>%
-  summarise(
-    Nc_m  = mean(Nc, na.rm = TRUE),
-    Nc_se = sd(Nc, na.rm = TRUE) / sqrt(sum(!is.na(Nc))),
-    Ne_m  = mean(Ne, na.rm = TRUE),
-    Ne_se = sd(Ne, na.rm = TRUE) / sqrt(sum(!is.na(Ne))),
-    He_m  = mean(He, na.rm = TRUE),
-    He_se = sd(He, na.rm = TRUE) / sqrt(sum(!is.na(He))),
-    Hp_m  = mean(Hp, na.rm = TRUE),
-    Hp_se = sd(Hp, na.rm = TRUE) / sqrt(sum(!is.na(Hp)))
+# 4. Resumen: una fila por carácter
+
+res <- qtb %>%
+  dplyr::distinct(
+    `Qualitative trait`,
+    Nc,
+    Ne,
+    He,
+    Hp
   )
 
+# 5. Media ± error estándar
+
+avg <- res %>%
+  dplyr::summarise(
+    Nc_m  = mean(Nc, na.rm = TRUE),
+    Nc_se = sd(Nc, na.rm = TRUE) /
+      sqrt(sum(!is.na(Nc))),
+    
+    Ne_m  = mean(Ne, na.rm = TRUE),
+    Ne_se = sd(Ne, na.rm = TRUE) /
+      sqrt(sum(!is.na(Ne))),
+    
+    He_m  = mean(He, na.rm = TRUE),
+    He_se = sd(He, na.rm = TRUE) /
+      sqrt(sum(!is.na(He))),
+    
+    Hp_m  = mean(Hp, na.rm = TRUE),
+    Hp_se = sd(Hp, na.rm = TRUE) /
+      sqrt(sum(!is.na(Hp)))
+  )
+
+
+# 9. Formato de la tabla larga
+
 out <- qtb %>%
-  mutate(across(c(fi, Nc, Ne, He, Hp), ~ round(., 2))) %>%
-  rename(`H′` = Hp)
+  dplyr::mutate(
+    dplyr::across(
+      c(fi, Nc, Ne, He, Hp),
+      ~ round(., 2)
+    )
+  ) %>%
+  dplyr::rename(
+    `H′` = Hp
+  )
+
 
 fmt <- out %>%
-  group_by(`Qualitative trait`) %>%
-  mutate(
+  dplyr::group_by(`Qualitative trait`) %>%
+  dplyr::mutate(
     Na = as.character(Na),
     fi = sprintf("%.2f", fi),
-    Nc = if_else(row_number() == 1, sprintf("%.2f", Nc), ""),
-    Ne = if_else(row_number() == 1, sprintf("%.2f", Ne), ""),
-    He = if_else(row_number() == 1, sprintf("%.2f", He), ""),
-    `H′` = if_else(row_number() == 1, sprintf("%.2f", `H′`), ""),
-    `Qualitative trait` = if_else(row_number() == 1, `Qualitative trait`, "")
+    
+    Nc = dplyr::if_else(
+      dplyr::row_number() == 1,
+      as.character(as.integer(Nc)),
+      ""
+    ),
+    
+    Ne = dplyr::if_else(
+      dplyr::row_number() == 1,
+      sprintf("%.2f", Ne),
+      ""
+    ),
+    
+    He = dplyr::if_else(
+      dplyr::row_number() == 1,
+      sprintf("%.2f", He),
+      ""
+    ),
+    
+    `H′` = dplyr::if_else(
+      dplyr::row_number() == 1,
+      sprintf("%.2f", `H′`),
+      ""
+    ),
+    
+    `Qualitative trait` =
+      dplyr::if_else(
+        dplyr::row_number() == 1,
+        `Qualitative trait`,
+        ""
+      )
   ) %>%
-  ungroup()
+  dplyr::ungroup()
+
+
+# Fila de media ± SE
 
 mrow <- avg %>%
-  transmute(
+  dplyr::transmute(
     `Qualitative trait` = "Mean ± SE",
     `Phenotypic classes observed` = "",
     Na = "",
@@ -199,30 +331,100 @@ mrow <- avg %>%
     `H′` = sprintf("%.2f ± %.2f", Hp_m, Hp_se)
   )
 
+
 Diversity <- fmt %>%
-  mutate(across(c(Nc, Ne, He, `H′`), as.character)) %>%
-  bind_rows(mrow)
+  dplyr::mutate(
+    dplyr::across(
+      c(Nc, Ne, He, `H′`),
+      as.character
+    )
+  ) %>%
+  dplyr::bind_rows(mrow)
 
 Diversity %>%
-  knitr::kable(caption = "Shannon–Weaver diversity index (H′)")
+  knitr::kable(
+    caption = "Shannon–Weaver diversity index (H′) - all phenotypic classes"
+  )
 
-write_xlsx(Diversity, "manuscript/Table-1.xlsx")
-
-Diversity %>% web_table(scrolly = "400px")
-
-cor_matrix <- Diversity %>%
-  dplyr::select(Na,fi,Nc, Ne, He, `H′`) %>%
-  drop_na()
-
-psych::pairs.panels(
-  cor_matrix,
-  method = "spearman",
-  hist.col = "red",
-  pch = 21,
-  stars = TRUE,
-  scale = FALSE,
-  lm = TRUE
+writexl::write_xlsx(
+  Diversity,
+  "files/STable-1.xlsx"
 )
+
+```
+
+### Diversity indices with SE and 95% CI
+
+`quali` has one row per plant/sample, so plants of the same accession are **not** independent.
+The SE and 95% CI of Ne, He and H′ are therefore obtained with a **cluster bootstrap**
+(accessions are resampled with replacement, 2000 replicates), which is valid whether there is one or
+several observations per accession.
+
+```{r }
+#| label: diversity-boot
+
+div_counts <- function(cnt) {
+  p <- cnt / sum(cnt)
+  p <- p[p > 0]
+  c(Ne = 1 / sum(p^2),
+    He = 1 - sum(p^2),
+    Hp = -sum(p * log(p)) + 0)
+}
+
+boot_div <- function(df, v, B = 2000) {
+  d   <- df %>% dplyr::filter(!is.na(.data[[v]]))
+  cnt <- unclass(table(as.character(d$entry), as.character(d[[v]])))  # accession x class
+  est <- div_counts(colSums(cnt))
+  bs  <- t(replicate(B, div_counts(
+    colSums(cnt[sample.int(nrow(cnt), replace = TRUE), , drop = FALSE]))))
+  se  <- apply(bs, 2, sd)
+  ci  <- apply(bs, 2, quantile, probs = c(0.025, 0.975))
+  
+  tibble::tibble(
+    n_obs = nrow(d), n_acc = nrow(cnt), Nc = ncol(cnt),
+    Ne = est[["Ne"]], se_Ne = se[["Ne"]], Ne_lo = ci[1, "Ne"], Ne_hi = ci[2, "Ne"],
+    He = est[["He"]], se_He = se[["He"]], He_lo = ci[1, "He"], He_hi = ci[2, "He"],
+    Hp = est[["Hp"]], se_Hp = se[["Hp"]], Hp_lo = ci[1, "Hp"], Hp_hi = ci[2, "Hp"]
+  )
+}
+
+set.seed(123)
+div_tab <- purrr::map_dfr(vars_q, \(v) {
+  boot_div(quali, v) %>% 
+    dplyr::mutate(trait = unname(labs[v]), .before = 1)
+})
+
+se_ <- \(x) sd(x) / sqrt(length(x))
+
+# ---- Table 1
+tab1_main <- div_tab %>%
+  dplyr::transmute(
+    `Qualitative trait` = trait,
+    `n (accessions)`    = as.character(n_acc),
+    Nc                  = as.character(Nc),
+    Ne                  = sprintf("%.2f", Ne),
+    `He ± SE`           = sprintf("%.2f ± %.2f", He, se_He),
+    `He 95% CI`         = sprintf("%.2f–%.2f", He_lo, He_hi),
+    `H′ ± SE`           = sprintf("%.2f ± %.2f", Hp, se_Hp),
+    `H′ 95% CI`         = sprintf("%.2f–%.2f", Hp_lo, Hp_hi)
+  ) %>%
+  dplyr::bind_rows(
+    tibble::tibble(
+      `Qualitative trait` = "Mean ± SE (across traits)",
+      `n (accessions)`    = "",
+      Nc                  = sprintf("%.2f ± %.2f", mean(div_tab$Nc), se_(div_tab$Nc)),
+      Ne                  = sprintf("%.2f ± %.2f", mean(div_tab$Ne), se_(div_tab$Ne)),
+      `He ± SE`           = sprintf("%.2f ± %.2f", mean(div_tab$He), se_(div_tab$He)),
+      `He 95% CI`         = "",
+      `H′ ± SE`           = sprintf("%.2f ± %.2f", mean(div_tab$Hp), se_(div_tab$Hp)),
+      `H′ 95% CI`         = ""
+    )
+  )
+
+tab1_main %>% web_table(scrolly = "400px")
+
+writexl::write_xlsx(tab1_main, "manuscript/Table-1.xlsx")
+writexl::write_xlsx(div_tab,   "files/STable-2.xlsx")
 ```
 
 # Objective 2
@@ -237,9 +439,9 @@ quanti <- fb %>%
 
 rb <- quanti%>%
   mutate(geno = case_when(
-    CHECKS == 0 ~ as.character(CODIGO)
-    , CHECKS == 1 ~ "CHECKS"
-  ), .after = CHECKS) %>% 
+    checks == 0 ~ as.character(entry)
+    , checks == 1 ~ "checks"
+  ), .after = checks) %>% 
   mutate(across(c(1:sample), as.factor)) 
 
 
@@ -252,14 +454,16 @@ exp <- rb %>%
 
 ```
 
-### Augmented design with entries as random effects and checks as fixed effects
+### Genotype fitted as a fixed effect
 
-Model: y ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
-
+Genotype (`geno`) was fitted as a fixed effect to obtain Best Linear Unbiased Estimators (BLUEs) for the
+multivariate analyses, using the model `y ~ 0 + (1|BLOCK) + (1|CODIGO:CHECKS) + geno`. Entries were included
+as individual levels of `geno`, while checks were pooled under a single level, with the identity of each
+check captured separately by the `CODIGO:CHECKS` term.
 
 ```{r }
 
-rslt <- 15:length(exp) %>% map(\(x) {
+rslt <- 14:length(exp) %>% map(\(x) {
   
 trait <- names(exp)[x]
 
@@ -267,13 +471,13 @@ exp %>%
    tidyr::drop_na(all_of(trait))%>% 
   H2cal(trait = trait
     , gen.name = "geno"
-    , rep.n = 2
-    , fixed.model = ~ 0 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + geno
-    , random.model = ~ 1 + (1|BLOCK) + (1|ROW) + (1|COLUMN) + (1|CODIGO:CHECKS) + (1|geno)
+    , rep.n = 1
+    , fixed.model = ~ 0 + (1|block) + (1|rows) + (1|cols)+ (1|entry:checks) + geno
+    , random.model = ~ 1 + (1|block) + (1|rows) + (1|cols)+(1|entry:checks) + (1|geno)
     , summary = TRUE
     , emmeans = FALSE 
     , plot_diag = TRUE
-    , outliers.rm = FALSE  
+    , outliers.rm = FALSE
     )
 
 })
@@ -292,9 +496,32 @@ blups <- 1:length(rslt) %>% map(\(x) {
       }) %>% Reduce(function(...) merge(..., all = TRUE
                                         , by = c('geno')), .)
 
+tabsmr %>% web_table(scrolly = "400px")
+writexl::write_xlsx(tabsmr, "files/STable-3.xlsx")
 
 ```
 
+```{r}
+# box plot 
+
+boxplot(exp$ap50f, main = "ap50f")
+boxplot(exp$ap50m, main = "ap50m")
+boxplot(exp$dt, main = "dt")
+boxplot(exp$spad, main = "spad")
+boxplot(exp$nrfp, main = "nrfp")
+boxplot(exp$df, main = "df")
+boxplot(exp$dflo, main = "dflo")
+boxplot(exp$lv, main = "lv")
+boxplot(exp$vp, main = "vp")
+boxplot(exp$dhm, main = "dhm")
+boxplot(exp$spv, main = "spv")
+boxplot(exp$av, main = "av")
+boxplot(exp$ps, main = "ps")
+boxplot(exp$ls, main = "ls")
+boxplot(exp$as, main = "as")
+boxplot(exp$rp, main = "rp")
+boxplot(exp$hc, main = "hc")
+```
 
 # Multivariate Analysis using BLUEs
    
@@ -306,15 +533,9 @@ ren <- setNames(
   map_nm[names(map_nm) %in% names(blues)]
 )
 
-blues <- blues %>% rename(!!!ren)
-
-# write_xlsx(blues, "files/blues.xlsx")
-blues <- blues %>% 
+blues <- blues %>% rename(!!!ren)|>
+  mutate(geno = str_remove(geno, "UNTRM-335-")) %>% 
   slice(-79)
-
-blues %>% web_table(scrolly = "400px")
-
-str(blues)
 
 mv <- blues%>% 
   column_to_rownames("geno") %>% 
@@ -335,7 +556,7 @@ pcavar <- mv %>%
 
 pcaind <- mv %>% 
   plot.PCA(choix="ind"
-           , habillage =10
+           , habillage =2
            , title=""
            , autoLab = "y"
            , cex = 0.8
@@ -352,17 +573,17 @@ list(pcavar, pcaind) %>%
 # Determinacion de grupos 
 
 datos.pca <- mv$ind$coord
+#
+fviz_nbclust(datos.pca, hcut, method = "wss", k.max = 10)
 
-fviz_nbclust(datos.pca, hcut, method = "wss")
+fviz_nbclust(datos.pca,hcut, method= "silhouette", k.max = 10)
 
-fviz_nbclust(datos.pca, hcut, method = "silhouette")
+fviz_nbclust(datos.pca, hcut, method = "gap_stat", k.max = 10)
 
-fviz_nbclust(datos.pca, hcut, method = "gap_stat")
+# Cluster
 
+hcpc <- HCPC(mv,nb.clust = -1, graph = FALSE)
 
-# Cluster 
-
-hcpc <- HCPC(mv,nb.clust = 2, graph = FALSE)
 
 tree <- \() {
   plot.HCPC(hcpc,
@@ -379,7 +600,14 @@ tree <- \() {
 hc <- hcpc$call$t$tree
 
 k <- length(unique(hcpc$data.clust$clust))
-clus <- cutree(hc, k)
+
+clus_tree <- cutree(hc, k)
+clus <- setNames(as.integer(as.character(hcpc$data.clust$clust)), 
+                 rownames(hcpc$data.clust))
+clus <- clus[rownames(mv$ind$coord)]     
+
+cat("Agreement between cutree() and consolidated HCPC clusters:\n")
+print(table(cutree = clus_tree[names(clus)], HCPC = clus))
 
 clus_df <- data.frame(
   Accesion = names(clus),
@@ -387,13 +615,13 @@ clus_df <- data.frame(
 )
 
 library(writexl)
-write_xlsx(clus_df, "files/STable-1.xlsx")
+write_xlsx(clus_df, "files/STable-4.xlsx")
 
-plot <- plot_grid(pcavar, tree,
+fig4 <- plot_grid(pcavar, tree,
                   nrow = 1, labels = "auto")
-p <- plot %>%
+p <- fig4 %>%
   ggsave2(plot = .
-          , "manuscript/Figure_4.jpg"
+          , "manuscript/Figure_3.jpg"
           , units = "cm", width = 35, height = 20)
 
 p %>% include_graphics()
@@ -401,15 +629,103 @@ p %>% include_graphics()
 
 ```
 
+## Cluster validation 
+
+### Silhouette width, k = 2 to 10
+
+Average silhouette width: > 0.50 reasonable structure; 0.26–0.50 weak structure (may be artificial);
+< 0.25 no substantial structure (Kaufman & Rousseeuw, 1990).
+
+```{r }
+#| label: validation-silhouette
+
+d_pc <- dist(mv$ind$coord)                       
+hc_w <- hclust(d_pc, method = "ward.D2")
+
+sil_k <- purrr::map_dfr(2:10, \(kk) {
+  s <- cluster::silhouette(cutree(hc_w, kk), d_pc)
+  tibble::tibble(k = kk, avg_sil = mean(s[, "sil_width"]))
+})
+sil_k %>% kable(digits = 3, caption = "Average silhouette width, Ward.D2 on PCA scores")
+
+cat("k with the highest average silhouette:", sil_k$k[which.max(sil_k$avg_sil)], "\n")
+
+sil_final <- cluster::silhouette(as.integer(clus), d_pc)
+cat("k used in the manuscript =", k, "| average silhouette =", 
+    round(mean(sil_final[, "sil_width"]), 3), "\n")
+print(round(tapply(sil_final[, "sil_width"], clus, mean), 3))
+
+ps1 <- ggplot2::ggplot(sil_k, ggplot2::aes(k, avg_sil)) +
+  ggplot2::geom_line() + ggplot2::geom_point() +
+  ggplot2::geom_vline(xintercept = k, linetype = 2, colour = "red") +
+  ggplot2::scale_x_continuous(breaks = 2:10) +
+  ggplot2::labs(y = "Average silhouette width", x = "Number of clusters (k)") +
+  ggplot2::theme_minimal()
+ps2 <- factoextra::fviz_silhouette(sil_final, print.summary = FALSE) + ggplot2::theme_minimal()
+
+sfig_sil <- plot_grid(ps1, ps2, nrow = 1, labels = "auto", rel_widths = c(0.8, 1.2))
+ggsave2(plot = sfig_sil, "files/SFigure-2.jpg", units = "cm", width = 60, height = 12)
+sfig_sil
+```
+
+### MANOVA of the clusters on PC1–PC3 
+
+The clusters were built from these same PCA scores, so the test is a **descriptive check of
+separation**, not an independent hypothesis test. A PERMANOVA on the original standardised traits is added as a
+complement that does not rely on multivariate normality.
+
+```{r }
+#| label: validation-manova
+
+pcs <- as.data.frame(mv$ind$coord[, 1:3])
+colnames(pcs) <- c("PC1", "PC2", "PC3")
+pcs$cluster <- factor(clus[rownames(pcs)])
+
+fit <- manova(cbind(PC1, PC2, PC3) ~ cluster, data = pcs)
+summary(fit, test = "Wilks")        
+summary.aov(fit)                    
+
+Zs <- scale(blues %>% tibble::column_to_rownames("geno"))
+adonis2(dist(Zs) ~ cluster, data = pcs[rownames(Zs), ], permutations = 9999)
+permutest(betadisper(dist(Zs), pcs[rownames(Zs), "cluster"]), permutations = 999)
+```
+
+### Bootstrap support with pvclust
+
+```{r }
+#| label: validation-pvclust
+
+set.seed(123)
+pv <- pvclust::pvclust(t(mv$ind$coord), method.hclust = "ward.D2", 
+                       method.dist = "euclidean", nboot = 1000, quiet = TRUE)
+
+plot(pv, hang = -1, cex = 0.5, cex.pv = 0.6, main = "")
+pvclust::pvrect(pv, alpha = 0.95)
+
+jpeg("files/SFigure-3.jpg", width = 32, height = 18, units = "cm", res = 300)
+plot(pv, hang = -1, cex = 0.5, cex.pv = 0.6, main = "")
+pvclust::pvrect(pv, alpha = 0.95)
+dev.off()
+
+cat("Nodes with AU >= 95%:", sum(pv$edges$au >= 0.95), "of", nrow(pv$edges), "\n")
+cat("Nodes with AU >= 90%:", sum(pv$edges$au >= 0.90), "of", nrow(pv$edges), "\n")
+str(pvclust::pvpick(pv, alpha = 0.95)$clusters)  
+```
+
+## Correlations among traits
+
+Spearman correlations among the 17 BLUE traits: 136 pairwise tests. p-values were adjusted with the
+Benjamini–Hochberg FDR procedure (q-values); 95% CIs of rho come from a bootstrap of accessions.
+
 ```{r}
 # Análisis de correlación
 
 cuanti_matrix <- blues %>% 
   dplyr::select(2:ncol(blues))
 
-vars <- names(cuanti_matrix)
+tr_vars <- names(cuanti_matrix)     
 
-cor_df <- combn(vars, 2, simplify = FALSE) %>%
+cor_df <- combn(tr_vars, 2, simplify = FALSE) %>%
   purrr::map_dfr(\(x) {
     
     test <- cor.test(
@@ -430,6 +746,22 @@ cor_df <- combn(vars, 2, simplify = FALSE) %>%
     q = p.adjust(p, method = "BH")
   )
 
+# ---- 95% bootstrap CI of rho ------------------------------------------------
+boot_rho <- function(x, y, B = 2000) {
+  n <- length(x)
+  r <- replicate(B, {
+    i <- sample.int(n, replace = TRUE)
+    suppressWarnings(cor(x[i], y[i], method = "spearman", use = "complete.obs"))
+  })
+  quantile(r, c(0.025, 0.975), na.rm = TRUE)
+}
+
+set.seed(123)
+ci_rho <- purrr::map2(cor_df$Trait1, cor_df$Trait2,
+                      \(a, b) boot_rho(cuanti_matrix[[a]], cuanti_matrix[[b]]))
+cor_df$rho_lo <- purrr::map_dbl(ci_rho, 1)
+cor_df$rho_hi <- purrr::map_dbl(ci_rho, 2)
+
 cor_df %>%
   arrange(q)
 
@@ -437,38 +769,72 @@ cor_df %>%
   summarise(
     total = n(),
     sig_p = sum(p < 0.05),
-    sig_q = sum(q < 0.05)
+    sig_q = sum(q < 0.05),
+    lost  = sum(p < 0.05 & q >= 0.05)
   )
 
 cor_df %>%
   filter(p < 0.05, q >= 0.05) %>%
   arrange(q)
 
+cat(sprintf("Of the %d pairwise Spearman correlations, %d were significant at p < 0.05 (unadjusted); after Benjamini-Hochberg FDR correction, %d remained significant (q < 0.05) and %d lost significance.\n",
+            nrow(cor_df), sum(cor_df$p < 0.05), sum(cor_df$q < 0.05), 
+            sum(cor_df$p < 0.05 & cor_df$q >= 0.05)))
+
+write_xlsx(cor_df %>% arrange(q), "files/STable-5.xlsx")
+
+
+# ---- Figure 3: matrix of correlations with FDR-based stars -----------------
+
+n_tr    <- length(tr_vars)
+rho_mat <- q_mat <- matrix(NA_real_, n_tr, n_tr, dimnames = list(tr_vars, tr_vars))
+for (i in seq_len(nrow(cor_df))) {
+  a <- cor_df$Trait1[i]; b <- cor_df$Trait2[i]
+  rho_mat[a, b] <- rho_mat[b, a] <- cor_df$rho[i]
+  q_mat[a, b]   <- q_mat[b, a]   <- cor_df$q[i]
+}
+stars_q <- \(q) ifelse(q < 0.001, "***", ifelse(q < 0.01, "**", ifelse(q < 0.05, "*", "")))
+col_id  <- \(x) which(vapply(cuanti_matrix, \(col) isTRUE(all.equal(col, x, check.attributes = FALSE)), logical(1)))[1]
+
+panel_hist <- function(x, ...) {
+  usr <- par("usr"); on.exit(par(usr = usr))
+  par(usr = c(usr[1:2], 0, 1.5))
+  h <- hist(x, plot = FALSE)
+  rect(h$breaks[-length(h$breaks)], 0, h$breaks[-1], h$counts / max(h$counts), col = "red")
+}
+panel_lower <- function(x, y, ...) {
+  points(x, y, pch = 21, cex = 0.6)
+  abline(lm(y ~ x), col = "blue", lwd = 1)
+}
+panel_upper <- function(x, y, ...) {
+  usr <- par("usr"); on.exit(par(usr = usr))
+  par(usr = c(0, 1, 0, 1))
+  i <- col_id(x); j <- col_id(y)
+  r <- rho_mat[i, j]; q <- q_mat[i, j]
+  text(0.5, 0.5, paste0(sprintf("%.2f", r), stars_q(q)), 
+       cex = 0.7 + 0.6 * abs(r), col = if (q < 0.05) "black" else "grey50")
+}
 
 grid <- \() {
-  
-  pairs.panels(cuanti_matrix,
-             method = "spearman",   
-             hist.col = "red",      
-             pch = 21,             
-             stars = T,        
-             scale = F,
-             lm = T)  
-  
+  pairs(cuanti_matrix, 
+        lower.panel = panel_lower, upper.panel = panel_upper, diag.panel = panel_hist,
+        gap = 0.3, cex.labels = 1.1,
+        main = "Spearman rho; * q<0.05, ** q<0.01, *** q<0.001 (Benjamini-Hochberg FDR)")
 }
 
 pg <- grid %>% 
   plot_grid()
 
-plot <- ggsave(filename = "manuscript/Figure-5.jpg"
-               , width = 30
-               , height = 30
-               , units = "cm")
+ggsave2(plot = pg, filename = "manuscript/Figure_4.jpg"
+        , width = 30
+        , height = 30
+        , units = "cm")
+pg
 ```
 
 
 
-# Tabla 2: Presents descriptive statistics for the quantitative traits evaluated in the blues dataset. For each trait, the table reports the mean, minimum, maximum, and coefficient of variation (CV%), providing a summary of the central tendency, range, and relative variability of the measured characteristics.
+# Tabla 2: Presents descriptive statistics for the quantitative traits evaluated in the blues dataset. For each trait, the table reports the mean, minimum, maximum, coefficient of variation (CV%) and broad-sense heritability (H²), providing a summary of the central tendency, range, relative variability and genetic determination of the measured characteristics.
 
 ```{r, echo=FALSE}
 
@@ -481,8 +847,15 @@ original <- setNames(names(nb),nb)
 bluesmeans <- bluesmeans %>% rename(!!!original)
 bluesmeans
 
+
+bluesmeans %>% 
+  dplyr::select(c(2:18)) %>% 
+  summarise(across(everything(), ~ sum(.x < 0, na.rm = TRUE))) %>% 
+  tidyr::pivot_longer(everything(), names_to = "trait", values_to = "n_negative_BLUEs") %>% 
+  dplyr::filter(n_negative_BLUEs > 0)
+
 rl <- bluesmeans %>%
-  dplyr::select(c(2:13)) %>%
+  dplyr::select(c(2:18)) %>%
   mutate(across(everything(), ~ifelse(.x < 0, 0, .x))) %>%
   summarise(across(
     everything(),
@@ -496,14 +869,33 @@ rl <- bluesmeans %>%
   pivot_longer(
     cols = everything(),
     names_to = c("Quantitative trait", "stat"),
-    names_sep = "_",
+    names_pattern = "^(.*)_(Mean|Min|Max|CV\\(%\\))$",   
     values_to = "value"
   ) %>%
   pivot_wider(
     names_from = stat,
     values_from = value
   ) %>%
-  mutate(across(Min:`CV(%)`, ~formatC(.x, format = "f", digits = 2))) 
+  mutate(across(Mean:`CV(%)`, ~formatC(.x, format = "f", digits = 2))) 
+
+# ---- Broad-sense heritability  ------------------------
+h2_cols <- grep("^H2", names(tabsmr), value = TRUE)
+print(h2_cols)                                           
+h2_use  <- if ("H2.c" %in% h2_cols) "H2.c" else h2_cols[1]   
+cat("H2 column reported in Table 2:", h2_use, "\n")
+
+map_desc <- info %>% 
+  dplyr::filter(!is.na(abbreviatio_sp)) %>% 
+  dplyr::distinct(abbreviatio_sp, .keep_all = TRUE) %>% 
+  dplyr::select(abbreviatio_sp, descriptors)
+
+h2_tab <- tabsmr %>% 
+  dplyr::left_join(map_desc, by = c("trait" = "abbreviatio_sp")) %>% 
+  dplyr::transmute(`Quantitative trait` = descriptors,
+                   H2 = sprintf("%.2f", .data[[h2_use]]))
+
+rl <- rl %>% 
+  dplyr::left_join(h2_tab, by = "Quantitative trait")
 
 rl%>% web_table()
 write_xlsx(rl, "manuscript/Table-2.xlsx")
@@ -511,17 +903,16 @@ write_xlsx(rl, "manuscript/Table-2.xlsx")
 ```
 
 # Supplementary material
-## Figure 1: The figure shows a principal component analysis (PCA), where (a) displays the correlation between variables and components, (b) the percentage of variance explained by each dimension, and (c–d) the variables contributing most to dimensions 1 and 2, allowing identification of the most influential variables in the data structure.
+## Figure 1: The figure shows a principal component analysis (PCA), where (a) displays the correlation between variables and components, (b) the percentage of variance explained by each dimension, and (c–e) the variables contributing most to dimensions 1, 2 and 3, allowing identification of the most influential variables in the data structure.
 
 ```{r }
-library(corrplot)
 
-var <- get_pca_var(mv)
+pca_var <- get_pca_var(mv)  
 
 tmp <- tempfile(fileext = ".png")
 ppi <- 300
 png(tmp, width=4*ppi, height=12*ppi, res=ppi)
-corrplot(var$cor, 
+corrplot(pca_var$cor, 
          method="number",
          tl.col="black", 
          tl.srt=45)
@@ -563,33 +954,78 @@ pt4 <- fviz_contrib(mv,
   ylim(0, 30) +  
   labs(title = "Dim 2 - variables contribution")
 
-plot <- ggdraw(xlim = c(0.0, 1.0), ylim = c(0, 1.0)) +
+pt5 <- fviz_contrib(mv,
+                     choice = "var", 
+                     axes = 3, 
+                     top = 10,
+                     fill = "white",
+                     color = "darkblue",
+                     sort.val = "desc") +
+  labs(title = "Dim 3 - variables contribution")
+
+plot_s1 <- ggdraw(xlim = c(0.0, 1.0), ylim = c(0, 1.0)) +
   draw_plot(pt1,  width = 0.4, height = 1.1, x = 0.6, y = -0.05) +  
-  draw_plot(pt2,  width = 0.6, height = 0.34, x = 0.03, y = 0.66) +
-  draw_plot(pt3, width = 0.6, height = 0.34, x = 0.03, y = 0.33) + 
-  draw_plot(pt4, width = 0.6, height = 0.34, x = 0.03, y = 0.0) +
+  draw_plot(pt2,  width = 0.6, height = 0.25, x = 0.03, y = 0.75) +
+  draw_plot(pt3, width = 0.6, height = 0.25, x = 0.03, y = 0.50) + 
+  draw_plot(pt4, width = 0.6, height = 0.25, x = 0.03, y = 0.25) +
+  draw_plot(pt5, width = 0.6, height = 0.25, x = 0.03, y = 0.00) +
   draw_plot_label(
-    label = c("a", "b", "c", "d"),
-    x = c(0.005, 0.005, 0.005, 0.65),
-    y = c(0.999, 0.67, 0.34, 0.999))
+    label = c("a", "b", "c", "d", "e"),
+    x = c(0.65, 0.005, 0.005, 0.005, 0.005),
+    y = c(0.999, 0.999, 0.75, 0.50, 0.25))
 
-print(plot)
+print(plot_s1)
 
-pt <- ggsave2(plot = plot, "files/SFigure-1.jpg", height = 25, width = 35, units = "cm")
+pt <- ggsave2(plot = plot_s1, "files/SFigure-1.jpg", height = 25, width = 35, units = "cm")
 
 pt %>% include_graphics()
+```
+
+### Interpretation of PC3 (Reviewer comment 27)
+
+```{r }
+#| label: pc3
+
+eig_tab <- as.data.frame(mv$eig[1:4, ])
+colnames(eig_tab) <- c("Eigenvalue", "Variance (%)", "Cumulative (%)")
+eig_tab %>% kable(digits = 2, caption = "Eigenvalues and explained variance")
+
+thr <- 100 / nrow(mv$var$coord)
+cat("Uniform contribution threshold =", round(thr, 2), "%\n")
+
+pc3 <- tibble::tibble(
+  Trait       = rownames(mv$var$coord),
+  Loading_PC1 = mv$var$cor[, 1],
+  Loading_PC2 = mv$var$cor[, 2],
+  Loading_PC3 = mv$var$cor[, 3],
+  Contrib_PC3 = mv$var$contrib[, 3],
+  Cos2_PC3    = mv$var$cos2[, 3]
+) %>% 
+  dplyr::arrange(dplyr::desc(Contrib_PC3))
+
+pc3 %>% kable(digits = 2, caption = "Variable loadings (correlation with PC) and contribution to PC3")
+cat("\nTraits contributing above the uniform threshold to PC3:\n")
+print(pc3 %>% dplyr::filter(Contrib_PC3 > thr) %>% dplyr::select(Trait, Loading_PC3, Contrib_PC3))
+
+write_xlsx(pc3, "files/STable-7.xlsx")
+
+pc13 <- fviz_pca_var(mv, axes = c(1, 3), repel = TRUE, title = "PC1 vs PC3")
+pc23 <- fviz_pca_var(mv, axes = c(2, 3), repel = TRUE, title = "PC2 vs PC3")
+sfig_pc3 <- plot_grid(pc13, pc23, nrow = 1, labels = "auto")
+ggsave2(plot = sfig_pc3, "files/SFigure-4.jpg", units = "cm", width = 32, height = 15)
+sfig_pc3
 ```
 
 
 # Tabla sumplemetaria 1
 ```{r}
-
-# Table blues 
 dic <- setNames(info_diccionario$cat_en, info_diccionario$cat_es)
 
 Tabla <- quali %>%
-  dplyr::select(-PLOT, -(NUM:sample)) %>% 
-  mutate(across(-CODIGO, ~ dplyr::recode(.x, !!!dic)))
+  dplyr::select(-plots, -ntreat, -type, -checks, -block, -sort, -rows, -cols, -design, -sample) %>%
+  mutate(id_geno = stringr::str_extract(entry, "\\d+$")) %>%
+  dplyr::select(-entry) %>%
+  mutate(across(-id_geno, ~ dplyr::recode(.x, !!!dic)))
 
 map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
 
@@ -601,67 +1037,144 @@ ren <- setNames(
 Tabla <- Tabla %>% rename(!!!ren)
 
 STable1 <- dplyr::left_join(
-  blues,
+  blues %>% mutate(geno = as.character(geno)),
   Tabla,
-  by = c("geno" = "CODIGO")
+  by = c("geno" = "id_geno")
 ) %>%
-  mutate(across(where(is.numeric), ~ round(.x, 2)))
+  mutate(across(where(is.numeric), ~ round(.x, 2))) 
 
-write_xlsx(STable1 , "files/STable-2 .xlsx")
+write_xlsx(STable1, "files/STable-8.xlsx")
 
- # Tabla CH1 and CH2
-## Cuali
-CH <- fb %>% 
-  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>% 
-  dplyr::distinct(CODIGO, .keep_all = TRUE) %>% 
-  dplyr::select(c(1:sample, cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc))
 
-map_nm <- setNames(info$abbreviatio_en, info$abbreviatio_sp)
+## -------- Cualitativa --------
+
+CH <- fb %>%
+  dplyr::filter(entry %in% c("UNTRM-335-1023", "UNTRM-335-1095")) %>%
+  dplyr::distinct(entry, .keep_all = TRUE) %>%
+  dplyr::select(entry, cce, tcvmfp, pv, cva, cv, cvmf, ph, cvs, fs, cda, Cpe, pcs, csco, cscc) %>%
+  mutate(across(-entry, ~ stringr::str_remove(.x, "^\\d+\\s*"))) %>%
+  mutate(across(-entry, ~ dplyr::recode(.x, !!!dic)))
 
 ren <- setNames(
   names(map_nm[names(map_nm) %in% names(CH)]),
   map_nm[names(map_nm) %in% names(CH)]
 )
 
-CH <- CH %>% rename(!!!ren) 
+CH <- CH %>% rename(!!!ren)
 
-CH <- CH %>% 
-  dplyr::select(c(12:LSCC)) %>% 
- dplyr::select(-sample)
+## -------- Cuantitativa --------
 
-
-## Cuanti
-
-CH1 <- fb %>% 
-  dplyr::filter(CODIGO %in% c("CH1", "CH2")) %>% 
-  dplyr::select(c(1:sample, ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp)) %>% 
-   mutate(across(c(ap50f,ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc, nrfp), as.numeric)) %>% 
-  mutate(hc=hc*100)
-
+CH1 <- fb %>%
+  dplyr::filter(entry %in% c("UNTRM-335-1023", "UNTRM-335-1095")) %>%
+  dplyr::select(entry, ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm, spv, av, ps, ls, as, rp, hc) %>%
+  mutate(across(c(ap50f, ap50m, dt, spad, nrfp, df, dflo, lv, vp, dhm,
+                   spv, av, ps, ls, as, rp, hc), as.numeric)) %>%
+  mutate(hc = hc * 100)
 
 CH1_mean <- CH1 %>%
-  group_by(TREATMENT) %>%
+  group_by(entry) %>%
   summarise(
-    across(
-      where(is.numeric),
-      ~ mean(.x, na.rm = TRUE)
-    ),
+    across(where(is.numeric), ~ mean(.x, na.rm = TRUE)),
     .groups = "drop"
   )
 
 ren <- setNames(
-  names(map_nm[names(map_nm) %in% names(CH1_mean )]),
-  map_nm[names(map_nm) %in% names(CH1_mean )]
+  names(map_nm[names(map_nm) %in% names(CH1_mean)]),
+  map_nm[names(map_nm) %in% names(CH1_mean)]
 )
 
-CH1 <- CH1_mean  %>% rename(!!!ren) 
+CH1_mean <- CH1_mean %>% rename(!!!ren)
 
+## -------- Unión final --------
 
-STable2 <- dplyr::left_join(CH1, CH, by = "TREATMENT")
+STable2 <- dplyr::left_join(CH1_mean, CH, by = "entry")
 
-write_xlsx(STable2 , "files/STable-3 .xlsx")
+write_xlsx(STable2, "files/STable-9.xlsx")
+```
 
+## Local market controls vs. accessions (Reviewer comment 25)
 
+`CH1` and `CH2` are the two local-market controls. Their values below are **raw plot means** of the controls,
+compared with the BLUEs of the accessions (the pooled BLUE of the checks was excluded from the PCA).
+The controls were not part of the clustering, so their group is obtained by projecting them onto the PCA
+(supplementary individuals) and assigning them to the nearest cluster centroid.
+
+```{r }
+#| label: checks
+
+acc <- STable1 |> 
+  dplyr::select(-qrcode)
+
+# (a) Values of the controls
+STable2 %>% 
+  dplyr::select(entry, dplyr::any_of(c("YP", "SW", "HI", "D50F", "D90M", "NPP", "PH90M", "SD"))) %>% 
+  kable(digits = 2, caption = "Controls (raw means)")
+
+# (b) Range of the accessions
+acc %>% 
+  dplyr::summarise(dplyr::across(dplyr::any_of(c("YP", "SW", "HI", "D50F", "D90M")),
+                                 list(mean = ~mean(.x, na.rm = TRUE), 
+                                      min  = ~min(.x, na.rm = TRUE), 
+                                      max  = ~max(.x, na.rm = TRUE)))) %>% 
+  tidyr::pivot_longer(everything(), names_to = c("trait", "stat"), 
+                      names_pattern = "^(.*)_(mean|min|max)$") %>% 
+  tidyr::pivot_wider(names_from = stat, values_from = value) %>% 
+  kable(digits = 2, caption = "Accessions (BLUEs)")
+
+# (c) % of accessions above each control
+purrr::map_dfr(intersect(c("YP", "SW", "HI"), names(STable2)), \(v) {
+  tibble::tibble(trait = v, control = as.character(STable2$entry),
+                 control_value = STable2[[v]],
+                 pct_accessions_above = purrr::map_dbl(STable2[[v]], \(z) mean(acc[[v]] > z, na.rm = TRUE) * 100))
+}) %>% kable(digits = 1, caption = "% of accessions with a value higher than each control")
+
+# (d) Cluster of each control (projection onto the PCA + nearest centroid)
+act_vars <- rownames(mv$var$coord)
+miss_v   <- setdiff(act_vars, names(STable2))
+
+if (length(miss_v) == 0) {
+  sup_df <- as.data.frame(STable2[, act_vars])
+  rownames(sup_df) <- as.character(STable2$entry)
+  sup_coord <- predict(mv, newdata = sup_df)$coord
+  
+  cent <- aggregate(as.data.frame(mv$ind$coord), by = list(cluster = clus), FUN = mean)
+  cent_m <- t(as.matrix(cent[, -1]))
+  chk_cluster <- apply(sup_coord, 1, \(z) cent$cluster[which.min(colSums((cent_m - z)^2))])
+  print(data.frame(control = rownames(sup_coord), nearest_cluster = chk_cluster))
+} else {
+  message("STable2 lacks these active PCA variables, so the controls cannot be projected: ",
+          paste(miss_v, collapse = ", "))
+}
+```
+
+## Identification of promising accessions (statistical input for Figure 2, Reviewer comment 24)
+
+Reviewer comment 24 asks that the illegible 80-accession composite (Figure 2) be moved to supplementary
+material as a high-resolution figure, and that the main text show only 3–4 selected promising accessions
+with clear, large images. This chunk only produces the **statistical selection** of which accessions qualify
+as "promising" (the input needed to decide which photos to feature); the figure itself must still be
+re-composed in image-editing software using the accessions listed below.
+
+Objective, a-priori criterion: BLUE yield per plant above the best control **and** 100-seed weight at least equal to the best control.
+Adjust the thresholds to the definition used in the manuscript.
+
+```{r }
+#| label: promising
+
+ref_ypp <- max(STable2$YP, na.rm = TRUE)
+ref_sw  <- max(STable2$SW,  na.rm = TRUE)
+
+prom <- acc %>% 
+  dplyr::filter(YP > ref_ypp, SW >= ref_sw) %>% 
+  dplyr::arrange(dplyr::desc(YP)) %>% 
+  dplyr::select(geno, dplyr::any_of(c("YP", "SW", "HI", "D50F", "D90M", "NPP")))
+prom %>% kable(digits = 2, caption = "Accessions above the best control (YP) and >= best control (SW)")
+
+idx <- acc %>% 
+  dplyr::mutate(index = as.numeric(scale(YP)) + as.numeric(scale(SW)) + as.numeric(scale(HI))) %>% 
+  dplyr::arrange(dplyr::desc(index)) %>% 
+  dplyr::select(geno, YP, SW, HI, index)
+head(idx, 6) %>% kable(digits = 2, caption = "Top accessions by an equal-weight index of YP, SW and HI")
 ```
 
 # objetivo 2
@@ -669,9 +1182,10 @@ write_xlsx(STable2 , "files/STable-3 .xlsx")
 
 ```{r}
 
+#| label: objetivo-2
+
 datos <- STable1 %>%
-  dplyr::select(geno, GH, DF, DPM, PPP, YPP, SW, HI, PHPM, SD) |> 
-  filter(geno != "CHECKS")
+  dplyr::select(geno, GH, D50F, D90M, NPP, YP, SW, HI, PH90M, SD)
 
 rownames(datos) <- datos$geno
 datos$geno <- NULL
@@ -684,15 +1198,14 @@ mfa <- MFA(
   name.group = c("Morphology","Phenology","Yield"),
   graph = FALSE
 )
- 
+
 par(mfrow = c(1, 2))
-var <- plot(mfa, choix = "var", cex = 0.8)
-ind <- plot(mfa, choix = "ind"
+mfa_var <- plot(mfa, choix = "var", cex = 0.8)
+mfa_ind <- plot(mfa, choix = "ind"
             , cex = 0.8
             , habillage = 1)
 
-
-plot1 <- plot_grid(var, ind,
+plot1 <- plot_grid(mfa_var, mfa_ind,
                   nrow = 1, labels = "auto")
 p1 <- plot1 %>%
   ggsave2(plot = .
@@ -703,5 +1216,180 @@ p1 %>% include_graphics()
 
 ```
 
+# Supplementary multivariate framework for mixed data (Reviewer comment 20)
 
+Stepwise comparison of alternatives, run on the **BLUEs (17 quantitative traits) + the qualitative descriptors**:
+
+1. standardisation: Z-score vs. Min–Max;
+2. dimension reduction: PCA, MCA, FAMD and PCoA (Gower);
+3. clustering: Ward, UPGMA, k-means (and PAM on Gower), choosing k with average silhouette and the Gap statistic;
+4. 2D and 3D representation.
+
+Notes: (i) Gower already rescales each trait by its range (equivalent to Min–Max), so the standardisation only affects the
+Euclidean methods (PCA, k-means, Ward); (ii) the "variance explained" of PCA, MCA, FAMD and PCoA are **not directly comparable**
+(different metrics), so the selection is based on the type of data (FAMD/Gower for mixed data), the silhouette and the cophenetic correlation, and
+the variance explained is reported as complementary information.
+
+```{r }
+#| label: framework-data
+
+mode_chr <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) NA_character_ else names(sort(table(x), decreasing = TRUE))[1]
+}
+
+qual_acc <- quali %>% 
+  dplyr::mutate(id_geno = stringr::str_extract(entry, "\\d+$")) %>% 
+  dplyr::group_by(id_geno) %>% 
+  dplyr::summarise(dplyr::across(dplyr::all_of(vars_q), mode_chr), .groups = "drop") %>% 
+  as.data.frame()
+rownames(qual_acc) <- as.character(qual_acc$id_geno)
+qual_acc$id_geno <- NULL
+
+quant_acc <- blues %>% tibble::column_to_rownames("geno")
+
+common   <- intersect(rownames(quant_acc), rownames(qual_acc))
+qual_acc <- qual_acc[common, , drop = FALSE]
+
+qual_acc <- qual_acc[, vapply(qual_acc, \(x) dplyr::n_distinct(x, na.rm = TRUE) > 1, logical(1)), drop = FALSE]
+ok       <- stats::complete.cases(qual_acc) & stats::complete.cases(quant_acc[common, ])
+cat("Accessions used:", sum(ok), "of", length(common), "\n")
+common   <- common[ok]
+
+qual_f <- qual_acc[common, , drop = FALSE] %>% 
+  dplyr::mutate(dplyr::across(dplyr::everything(), factor))
+quant_c <- quant_acc[common, , drop = FALSE]
+mix <- cbind(quant_c, qual_f)
+stopifnot(!anyDuplicated(names(mix)))
+
+z  <- scale(quant_c)
+mm <- apply(quant_c, 2, \(x) (x - min(x)) / (max(x) - min(x)))
+```
+
+```{r }
+#| label: framework-reduction
+
+pca_z  <- PCA(as.data.frame(z),  ncp = 5, graph = FALSE)
+pca_mm <- PCA(as.data.frame(mm), ncp = 5, scale.unit = FALSE, graph = FALSE)
+mca    <- MCA(qual_f, ncp = 5, graph = FALSE)
+famd   <- FAMD(mix, ncp = 5, graph = FALSE)
+gow    <- cluster::daisy(mix, metric = "gower")
+pcoa   <- cmdscale(gow, k = 5, eig = TRUE)
+pos    <- pcoa$eig[pcoa$eig > 0]
+
+eig_cum <- \(res, n) sum(res$eig[1:n, 2])
+var_expl <- tibble::tibble(
+  Method = c("PCA (Z-score)", "PCA (Min-Max)", "MCA (qualitative only)", "FAMD", "PCoA (Gower)"),
+  `Dim 1 (%)`   = c(eig_cum(pca_z, 1), eig_cum(pca_mm, 1), eig_cum(mca, 1), eig_cum(famd, 1), pos[1] / sum(pos) * 100),
+  `Dim 1-2 (%)` = c(eig_cum(pca_z, 2), eig_cum(pca_mm, 2), eig_cum(mca, 2), eig_cum(famd, 2), sum(pos[1:2]) / sum(pos) * 100),
+  `Dim 1-3 (%)` = c(eig_cum(pca_z, 3), eig_cum(pca_mm, 3), eig_cum(mca, 3), eig_cum(famd, 3), sum(pos[1:3]) / sum(pos) * 100)
+)
+var_expl %>% kable(digits = 1, caption = "Variance explained by each ordination (not directly comparable across methods)")
+```
+
+```{r }
+#| label: framework-clustering
+
+X_famd <- famd$ind$coord
+d_famd <- dist(X_famd)
+
+eval_hc <- function(d, method, space, label, ks = 2:10) {
+  hc <- hclust(d, method)
+  tibble::tibble(
+    space = space, method = label, k = ks,
+    avg_sil = purrr::map_dbl(ks, \(kk) mean(cluster::silhouette(cutree(hc, kk), d)[, "sil_width"])),
+    cophenetic = cor(d, cophenetic(hc))
+  )
+}
+set.seed(123)
+eval_km <- function(X, d, ks = 2:10) {
+  tibble::tibble(
+    space = "FAMD", method = "k-means", k = ks,
+    avg_sil = purrr::map_dbl(ks, \(kk) mean(cluster::silhouette(kmeans(X, kk, nstart = 50)$cluster, d)[, "sil_width"])),
+    cophenetic = NA_real_
+  )
+}
+eval_pam <- function(d, ks = 2:10) {
+  tibble::tibble(
+    space = "Gower", method = "PAM", k = ks,
+    avg_sil = purrr::map_dbl(ks, \(kk) mean(cluster::silhouette(cluster::pam(d, kk, diss = TRUE)$clustering, d)[, "sil_width"])),
+    cophenetic = NA_real_
+  )
+}
+
+sil_all <- dplyr::bind_rows(
+  eval_hc(d_famd, "ward.D2", "FAMD",  "Ward"),
+  eval_hc(d_famd, "average", "FAMD",  "UPGMA"),
+  eval_km(X_famd, d_famd),
+  eval_hc(gow,    "ward.D2", "Gower", "Ward"),
+  eval_hc(gow,    "average", "Gower", "UPGMA"),
+  eval_pam(gow)
+)
+
+best_by_method <- sil_all %>% 
+  dplyr::group_by(space, method) %>% 
+  dplyr::slice_max(avg_sil, n = 1, with_ties = FALSE) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::arrange(dplyr::desc(avg_sil))
+best_by_method %>% kable(digits = 3, caption = "Best k (highest average silhouette) for each space x method")
+
+set.seed(123)
+gap_km <- cluster::clusGap(X_famd, FUN = kmeans, K.max = 10, B = 500, nstart = 25)
+gap_wd <- cluster::clusGap(X_famd, FUN = factoextra::hcut, K.max = 10, B = 500, hc_method = "ward.D2")
+k_gap_km <- cluster::maxSE(gap_km$Tab[, "gap"], gap_km$Tab[, "SE.sim"], method = "firstSEmax")
+k_gap_wd <- cluster::maxSE(gap_wd$Tab[, "gap"], gap_wd$Tab[, "SE.sim"], method = "firstSEmax")
+cat("Gap statistic -> k (k-means):", k_gap_km, "| k (Ward):", k_gap_wd, "\n")
+
+pl_sil <- ggplot2::ggplot(sil_all, ggplot2::aes(k, avg_sil, colour = method, linetype = space)) +
+  ggplot2::geom_line() + ggplot2::geom_point() +
+  ggplot2::scale_x_continuous(breaks = 2:10) +
+  ggplot2::labs(y = "Average silhouette width", x = "k") + ggplot2::theme_minimal()
+pl_gap <- factoextra::fviz_gap_stat(gap_wd) + ggplot2::labs(title = "Gap statistic (Ward, FAMD space)")
+plot_grid(pl_sil, pl_gap, nrow = 1, labels = "auto")
+
+writexl::write_xlsx(list(variance_explained = var_expl, silhouette = sil_all, best_k = best_by_method),
+                    "files/STable-10.xlsx")
+```
+
+```{r }
+#| label: framework-plots
+
+k_sel <- sil_all %>% 
+  dplyr::filter(space == "FAMD", method == "Ward") %>% 
+  dplyr::slice_max(avg_sil, n = 1, with_ties = FALSE) %>% 
+  dplyr::pull(k)
+cat("k used in the plots:", k_sel, "\n")
+
+cl_famd <- factor(cutree(hclust(d_famd, "ward.D2"), k_sel))
+
+common_pca <- intersect(common, names(clus))
+print(table(FAMD_Ward = cl_famd[common_pca], PCA_HCPC = clus[common_pca]))
+if (requireNamespace("mclust", quietly = TRUE))
+  cat("Adjusted Rand index vs. PCA/HCPC partition:",
+      round(mclust::adjustedRandIndex(as.integer(cl_famd[common_pca]), clus[common_pca]), 3), "\n")
+
+df3 <- as.data.frame(famd$ind$coord[, 1:3])
+colnames(df3) <- c("Dim1", "Dim2", "Dim3")
+df3$cluster   <- cl_famd
+df3$accession <- rownames(df3)
+pct <- famd$eig[1:3, 2]
+
+p2d <- ggplot2::ggplot(df3, ggplot2::aes(Dim1, Dim2, colour = cluster)) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::stat_ellipse(level = 0.9, linetype = 2) +
+  ggplot2::labs(x = sprintf("Dim 1 (%.1f%%)", pct[1]), y = sprintf("Dim 2 (%.1f%%)", pct[2])) +
+  ggplot2::theme_minimal()
+p2d
+ggsave2(plot = p2d, "files/SFigure-5_FAMD-2D.jpg", units = "cm", width = 18, height = 14)
+
+p3d <- plotly::plot_ly(df3, x = ~Dim1, y = ~Dim2, z = ~Dim3, color = ~cluster, 
+                       text = ~accession, type = "scatter3d", mode = "markers",
+                       marker = list(size = 4)) %>% 
+  plotly::layout(scene = list(
+    xaxis = list(title = sprintf("Dim 1 (%.1f%%)", pct[1])),
+    yaxis = list(title = sprintf("Dim 2 (%.1f%%)", pct[2])),
+    zaxis = list(title = sprintf("Dim 3 (%.1f%%)", pct[3]))))
+p3d
+htmlwidgets::saveWidget(p3d, "files/SFigure-6_FAMD-3D.html", selfcontained = TRUE)
+```
 # End
