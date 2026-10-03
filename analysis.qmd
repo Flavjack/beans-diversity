@@ -32,6 +32,7 @@ library(writexl)
 library(cluster)
 library(pvclust)
 library(lme4)
+library(ggrepel)
 library(psych)
 library(plotly)
 library(corrplot)
@@ -1175,7 +1176,7 @@ grid <- \() {
 pg <- grid %>% 
   plot_grid()
 
-ggsave2(plot = pg, filename = "manuscript/Figure_4.jpg"
+ggsave2(plot = pg, filename = "manuscript/Figure_2.jpg"
         , width = 30
         , height = 30
         , units = "cm")
@@ -1453,8 +1454,11 @@ top4 %>% knitr::kable(digits = 2, caption = "Selected promising accessions (top 
 ## Identification of Promising Accessions Using MFA
 
 ```{r, echo=FALSE}
+library(ggplot2)
+library(ggrepel)
+
 datos <- STable1 %>%
-  dplyr::filter(!geno %in% c("1023", "1095")) %>%     # ONLY CHANGE: 78 accessions
+  dplyr::filter(!geno %in% c("1023", "1095")) %>%     # 78 accessions
   dplyr::select(geno, GH, D50F, D90M, NPP, YP, SW, HI, PH90M, SD)
 
 rownames(datos) <- datos$geno
@@ -1467,30 +1471,56 @@ mfa <- MFA(
   datos,
   group = c(1, 2, 6),
   type = c("n", "s", "s"),
-  name.group = c("Morphology","Phenology","Yield"),
+  name.group = c("Morphology", "Phenology", "Yield"),
   graph = FALSE
 )
 
-par(mfrow = c(1, 2))
+# (a) Correlation circle: unchanged
 mfa_var <- plot(mfa, choix = "var", cex = 0.8)
-mfa_ind <- plot(mfa, choix = "ind"
-            , cex = 0.8
-            , habillage = 1)
 
-plot1 <- plot_grid(mfa_var, mfa_ind,
-                  nrow = 1, labels = "auto")
+# (b) Individual map highlighting the promising accessions (top4 from Objective 3)
+ind <- as.data.frame(mfa$ind$coord[, 1:2])
+colnames(ind) <- c("Dim1", "Dim2")
+ind$geno <- rownames(ind)
+ind$GH   <- datos[ind$geno, "GH"]
+ind$prom <- ind$geno %in% as.character(top4$geno)
+
+stopifnot(sum(ind$prom) == 4)
+
+eig <- round(mfa$eig[1:2, 2], 2)
+
+mfa_ind2 <- ggplot(ind, aes(Dim1, Dim2, colour = GH)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_point(data = subset(ind, !prom), alpha = 0.5, size = 1.8) +
+  geom_point(data = subset(ind, prom), size = 4.5, shape = 17) +
+  geom_text_repel(data = subset(ind, prom),
+                  aes(label = geno), fontface = "bold", size = 4,
+                  show.legend = FALSE, box.padding = 0.7,
+                  min.segment.length = 0) +
+  scale_colour_manual(values = c("Determinate bush"        = "red",
+                                 "Indeterminate bush"      = "green3",
+                                 "Indeterminate climbing"  = "blue",
+                                 "Indeterminate prostrate" = "magenta"),
+                      name = "GH") +
+  labs(title = "Individual factor map",
+       x = paste0("Dim 1 (", eig[1], "%)"),
+       y = paste0("Dim 2 (", eig[2], "%)")) +
+  theme_minimal(base_size = 12)
+
+plot1 <- plot_grid(mfa_var, mfa_ind2, nrow = 1, labels = "auto")
 p1 <- plot1 %>%
   ggsave2(plot = .
-          , "manuscript/Figure_5.jpg"
+          , "manuscript/Figure_4.jpg"
           , units = "cm", width = 40, height = 15)
 
 p1 %>% include_graphics()
 
-# ---- NEW: values for Results ----
 round(mfa$eig[1:3, ], 2)               # variance Dim1-3
 round(mfa$group$RV, 2)                 # RV between groups
 round(mfa$group$contrib[, 1:3], 1)     # group contribution to Dim1-3
 
+ind[ind$prom, ]
 ```
 
 # Supplementary multivariate framework for mixed data 
